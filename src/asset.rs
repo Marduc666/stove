@@ -1,18 +1,129 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    fs::File,
+    io::{BufReader, Cursor},
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
-use unreal_asset::{engine_version::EngineVersion, error::Error, Asset};
+use unreal_asset::{
+    engine_version::EngineVersion,
+    error::Error,
+    schema::{self, LooseContent},
+    unversioned::Usmap,
+    Asset,
+};
 
-/// creates an asset from the specified path and version
-pub fn open(file: impl AsRef<Path>, version: EngineVersion) -> Result<super::Asset, Error> {
+/// the raw usmap, kept as bytes since parsed mappings can't be sent between threads
+static MAPPINGS: RwLock<Option<Arc<Vec<u8>>>> = RwLock::new(None);
+
+thread_local! {
+    /// mappings parsed on this thread and the bytes they came from
+    static PARSED: RefCell<Option<(Arc<Vec<u8>>, Usmap)>> = const { RefCell::new(None) };
+}
+
+/// replaces the mappings with the contents of the usmap at this path
+pub fn load_mappings(path: &str) -> Result<(), Error> {
+    let mappings = match path.is_empty() {
+        true => None,
+        false => {
+            let data = std::fs::read(path)?;
+            Usmap::new(Cursor::new(data.clone()))?;
+            Some(Arc::new(data))
+        }
+    };
+    *MAPPINGS.write().unwrap() = mappings;
+    Ok(())
+}
+
+/// a copy of the mappings for an asset to read with
+pub fn mappings() -> Option<Usmap> {
+    let data = MAPPINGS.read().unwrap().clone()?;
+    PARSED.with_borrow_mut(|parsed| {
+        if !parsed.as_ref().is_some_and(|(from, _)| Arc::ptr_eq(from, &data)) {
+            let usmap = Usmap::new(Cursor::new(data.to_vec())).ok()?;
+            *parsed = Some((data, usmap));
+        }
+        parsed.as_ref().map(|(_, usmap)| usmap.clone())
+    })
+}
+
+/// reads an asset with these mappings
+fn read_file(
+    file: &Path,
+    version: EngineVersion,
+    mappings: Option<Usmap>,
+) -> Result<super::Asset, Error> {
     Asset::new(
-        super::Wrapper::File(BufReader::new(File::open(&file)?)),
-        File::open(file.as_ref().with_extension("uexp"))
+        super::Wrapper::File(BufReader::new(File::open(file)?)),
+        File::open(file.with_extension("uexp"))
             .ok()
             .map(BufReader::new)
             .map(super::Wrapper::File),
         version,
-        None,
+        mappings,
     )
+}
+
+/// the folder holding a loose game and the name of the game from a file inside its content
+fn game_of(file: &Path) -> Option<(&Path, String)> {
+    let game = file.ancestors().find(|dir| dir.join("Content").is_dir())?;
+    Some((game.parent()?, game.file_name()?.to_string_lossy().into_owned()))
+}
+
+/// adds the blueprints this asset needs to the mappings, returns whether there were any
+fn pull_schemas(asset: &super::Asset, file: &Path, version: EngineVersion) -> bool {
+    let Some((root, game)) = game_of(file) else {
+        return false;
+    };
+    let Some(data) = MAPPINGS.read().unwrap().clone() else {
+        return false;
+    };
+    // make sure this thread has parsed them
+    let Some(mut usmap) = mappings() else {
+        return false;
+    };
+    let content = LooseContent::new(root, &game);
+    let visited = &mut HashSet::new();
+    let added = schema::pull_schemas(asset, version, &mut usmap, visited, |package| {
+        content.load(package)
+    });
+    PARSED.set(Some((data, usmap)));
+    added > 0
+}
+
+/// creates an asset from the specified path and version
+pub fn open(file: impl AsRef<Path>, version: EngineVersion) -> Result<super::Asset, Error> {
+    let file = file.as_ref();
+    let asset = read_file(file, version, mappings())?;
+    // blueprints are only readable once their schemas are in the mappings
+    match pull_schemas(&asset, file, version) {
+        true => read_file(file, version, mappings()),
+        false => Ok(asset),
+    }
+}
+
+/// whether saving a map without changing it would give back the same file
+///
+/// this writes a separate copy since writing can add to an asset's name map
+pub fn preserves(file: impl AsRef<Path>, version: EngineVersion) -> bool {
+    let file = file.as_ref();
+    let Ok(asset) = read_file(file, version, mappings()) else {
+        return false;
+    };
+    let mut data = Cursor::new(Vec::new());
+    let mut exports = asset
+        .asset_data
+        .use_event_driven_loader
+        .then(|| Cursor::new(Vec::new()));
+    // writers have to be the same type as they're passed together
+    if asset.write_data(&mut data, exports.as_mut()).is_err() {
+        return false;
+    }
+    let same = |path: &Path, written: Vec<u8>| std::fs::read(path).is_ok_and(|e| e == written);
+    same(file, data.into_inner())
+        && exports.map_or(true, |e| same(&file.with_extension("uexp"), e.into_inner()))
 }
 
 /// saves an asset's data to the specified path
@@ -70,7 +181,7 @@ pub fn get<T>(
     let loose = content.folder.join(&path);
     let mesh = loose.with_extension("uasset");
     if mesh.exists() {
-        if let Ok(asset) = open(mesh, version).and_then(|asset| {
+        if let Ok(asset) = read_file(&mesh, version, mappings()).and_then(|asset| {
             func(
                 asset,
                 std::fs::File::open(loose.with_extension("ubulk"))
@@ -147,7 +258,7 @@ fn read<T>(
                         .map(std::io::BufReader::new)
                         .map(super::Wrapper::File),
                     version,
-                    None,
+                    mappings(),
                 )?,
                 std::fs::File::open(cached(&bulk))
                     .ok()
@@ -172,7 +283,7 @@ fn read<T>(
                     .map(std::io::Cursor::new)
                     .map(super::Wrapper::Bytes),
                 version,
-                None,
+                mappings(),
             )?,
             pak.get(&bulk, pak_file)
                 .ok()

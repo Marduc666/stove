@@ -263,28 +263,10 @@ pub fn load_paks(
             None
         }
     };
-    #[cfg(target_os = "windows")]
-    #[link(name = "oo2core_win64", kind = "static")]
-    extern "C" {
-        fn OodleLZ_Decompress(
-            compBuf: *const u8,
-            compBufSize: usize,
-            rawBuf: *mut u8,
-            rawLen: usize,
-            fuzzSafe: u32,
-            checkCRC: u32,
-            verbosity: u32,
-            decBufBase: u64,
-            decBufSize: usize,
-            fpCallback: u64,
-            callbackUserData: u64,
-            decoderMemory: *mut u8,
-            decoderMemorySize: usize,
-            threadPhase: u32,
-        ) -> i32;
-    }
     let path = &appdata.paks[pak].0;
     content.folder = path.into();
+    #[cfg(target_os = "windows")]
+    crate::oodle::load(path);
     // use std::io::Write;
     // let mut log = std::fs::File::create("paks.log").unwrap();
     content.maps.clear();
@@ -310,26 +292,7 @@ pub fn load_paks(
             }
             #[cfg(target_os = "windows")]
             {
-                pak = pak.oodle(|| {
-                    Ok(|comp_buf, raw_buf| unsafe {
-                        OodleLZ_Decompress(
-                            comp_buf.as_ptr(),
-                            comp_buf.len(),
-                            raw_buf.as_mut_ptr(),
-                            raw_buf.len(),
-                            1,
-                            1,
-                            0,
-                            0,
-                            0,
-                            0,
-                            0,
-                            std::ptr::null_mut(),
-                            0,
-                            3,
-                        )
-                    })
-                });
+                pak = pak.oodle(crate::oodle::get);
             }
             let pak = pak.reader(&mut pak_file).ok()?;
             // let _ = writeln!(

@@ -82,11 +82,13 @@ impl Actor {
         let name = match asset.get_engine_version()
             >= unreal_asset::engine_version::EngineVersion::VER_UE5_1
         {
-            true => match norm.extras[8..12]
-                .try_into()
-                .ok()
-                .map(|i| i32::from_le_bytes(i) as usize)
-                .and_then(|len| String::from_utf8(norm.extras[12..12 + len].to_vec()).ok())
+            true => match norm
+                .extras
+                .get(8..12)
+                .and_then(|len| len.try_into().ok())
+                .map(|len| i32::from_le_bytes(len) as usize)
+                .and_then(|len| norm.extras.get(12..12 + len))
+                .and_then(|name| String::from_utf8(name.to_vec()).ok())
             {
                 Some(name) if !name.chars().all(char::is_whitespace) => name,
                 _ => norm.base_export.object_name.get_owned_content(),
@@ -327,4 +329,43 @@ fn on_prop_refs(prop: &mut Property, func: &mut impl FnMut(&mut PackageIndex)) {
         }
         _ => (),
     })
+}
+
+/// opens a map like stove would, set `STOVE_TEST_MAP` and `STOVE_TEST_USMAP` to run this
+#[test]
+fn opens_map() {
+    let (Ok(map), Ok(usmap)) = (std::env::var("STOVE_TEST_MAP"), std::env::var("STOVE_TEST_USMAP"))
+    else {
+        return;
+    };
+    super::asset::load_mappings(&usmap).unwrap();
+    let asset = super::asset::open(
+        &map,
+        unreal_asset::engine_version::EngineVersion::VER_UE5_8,
+    )
+    .unwrap();
+    let actors = get_actors(&asset);
+    let mut errors = std::collections::BTreeMap::new();
+    let mut meshes = 0;
+    let mut opened = 0;
+    for &actor in &actors {
+        match Actor::new(&asset, actor) {
+            Ok((mesh, _)) => {
+                opened += 1;
+                meshes += mesh.is_some() as usize;
+            }
+            Err(e) => *errors.entry(e.to_string()).or_insert(0) += 1,
+        }
+    }
+    println!(
+        "{map}: {opened}/{} actors, {meshes} with meshes, saves identically: {}",
+        actors.len(),
+        super::asset::preserves(&map, unreal_asset::engine_version::EngineVersion::VER_UE5_8),
+    );
+    let mut errors: Vec<_> = errors.into_iter().collect();
+    errors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    for (error, count) in errors.iter().take(8) {
+        println!("  {count}x {}", error.chars().take(120).collect::<String>());
+    }
+    assert!(opened > 0);
 }

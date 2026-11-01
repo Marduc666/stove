@@ -12,6 +12,8 @@ mod asset;
 mod dialog;
 mod extras;
 mod input;
+#[cfg(target_os = "windows")]
+mod oodle;
 mod persistence;
 mod picking;
 mod startup;
@@ -50,6 +52,7 @@ struct Focus(Option<Vec3>);
 #[derive(Default, Resource)]
 struct AppData {
     version: usize,
+    usmap: String,
     paks: Vec<(String, String)>,
     pak: Option<usize>,
     cache: bool,
@@ -265,7 +268,7 @@ fn main() -> AppExit {
 
 use unreal_asset::engine_version::EngineVersion::*;
 
-const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 33] = [
+const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 39] = [
     (UNKNOWN, "unknown"),
     (VER_UE4_OLDEST_LOADABLE_PACKAGE, "oldest"),
     (VER_UE4_0, "4.0"),
@@ -299,4 +302,10 @@ const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 33] = [
     (VER_UE5_0, "5.0"),
     (VER_UE5_1, "5.1"),
     (VER_UE5_2, "5.2"),
+    (VER_UE5_3, "5.3"),
+    (VER_UE5_4, "5.4"),
+    (VER_UE5_5, "5.5"),
+    (VER_UE5_6, "5.6"),
+    (VER_UE5_7, "5.7"),
+    (VER_UE5_8, "5.8"),
 ];

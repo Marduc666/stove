@@ -32,6 +32,7 @@ pub fn load(
             }
         }
         retrieve(&mut appdata.version, "version", data);
+        retrieve(&mut appdata.usmap, "usmap", data);
         retrieve(&mut appdata.paks, "paks", data);
         retrieve(&mut appdata.pak, "pak", data);
         retrieve(&mut appdata.cache, "cache", data);
@@ -51,6 +52,10 @@ pub fn load(
         window.mode = bevy::window::WindowMode::BorderlessFullscreen
     }
     wire.global = appdata.wireframe;
+    // a mapping file that has since moved shouldn't stop stove from starting
+    if crate::asset::load_mappings(&appdata.usmap).is_err() {
+        appdata.usmap.clear();
+    }
     commands.insert_resource(appdata);
     commands.trigger(triggers::LoadPaks);
 }
@@ -63,6 +68,7 @@ pub fn write(mut ctx: bevy_egui::EguiContexts, appdata: Res<AppData>, windows: Q
     ctx.ctx_mut().memory_mut(|storage| {
         let storage = &mut storage.data;
         storage.insert_persisted(Id::new("version"), appdata.version);
+        storage.insert_persisted(Id::new("usmap"), appdata.usmap.clone());
         storage.insert_persisted(Id::new("paks"), appdata.paks.clone());
         storage.insert_persisted(Id::new("pak"), appdata.pak);
         storage.insert_persisted(Id::new("cache"), appdata.cache);

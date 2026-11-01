@@ -35,6 +35,13 @@ pub fn open(
             return;
         }
     };
+    if !asset::preserves(&path, appdata.version()) {
+        notif.send(Notif {
+            message: "saving this map would change data stove can't fully read - keep a backup"
+                .into(),
+            kind: Warning,
+        });
+    }
     let name: Option<String> = path.to_str().map(|s| s.into());
     open_asset(
         name.as_deref(),
@@ -83,6 +90,13 @@ pub fn from_content(
                     return;
                 }
             };
+            if !asset::preserves(&path, appdata.version()) {
+                notif.send(Notif {
+                    message: "saving this map would change data stove can't fully read - keep a backup"
+                        .into(),
+                    kind: Warning,
+                });
+            }
             open_asset(
                 Some(name),
                 None,
@@ -111,7 +125,7 @@ pub fn from_content(
                         .map(std::io::Cursor::new)
                         .map(super::Wrapper::Bytes),
                     appdata.version(),
-                    None,
+                    asset::mappings(),
                 ) {
                     Ok(asset) => Some(asset),
                     Err(e) => {

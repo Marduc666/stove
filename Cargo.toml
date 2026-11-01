@@ -9,7 +9,7 @@ version = "0.13.2"
 edition = "2021"
 
 [dependencies]
-unreal_asset = { git = "https://github.com/astrotechies/unrealmodding", rev = "84e60cc" }
+unreal_asset = { git = "https://github.com/Marduc666/unrealmodding", rev = "2090ece" }
 byteorder = "1.5"
 bitflags = "2.4"
 texture2ddecoder = "0.0"
@@ -45,6 +45,9 @@ update-informer = { version = "1.1", default-features = false, features = [
     "ureq"
 ] }
 walkdir = "2.5"
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.8"
 
 [dev-dependencies]
 png = "0.17"

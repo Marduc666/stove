@@ -41,6 +41,19 @@
 - [x] discord RPC (show your internet friends what you're doing)
 </details>
 
+# unreal engine 5.3 and newer
+
+cooked ue5 games need a little setup as their maps don't contain any type information:
+
+1. extract the game with [retoc](https://github.com/trumank/retoc) if it uses iostore (`.utoc`/`.ucas`), keeping the folder structure
+2. select the engine version in stove
+3. select the game's `.usmap` next to the engine version
+4. open a map from the extracted folder
+
+blueprints missing from the usmap are read from their packages, so these have to be extracted as well.
+
+only unversioned packages are supported from 5.4 onwards, which is what games ship. exports that can't be read are kept as they are when saving but won't show up in stove
+
 # credits
 
 - [atenfyr](https://github.com/atenfyr) for creating the extensive [UAssetAPI](https://github.com/atenfyr/UAssetAPI) which made this project possible ❤️
