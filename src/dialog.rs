@@ -227,8 +227,8 @@ fn open_asset(
                 s.spawn(|| {
                     // capture path
                     let path = path;
-                    match asset::get(&content, cache.as_deref(), &path, version, |asset, _| {
-                        Ok(extras::get_mesh_info(asset)?)
+                    match asset::get(&content, cache.as_deref(), &path, version, |asset, bulk| {
+                        Ok(extras::get_mesh_info(asset, bulk)?)
                     }) {
                         Some((positions, indices, uvs, mats, _mat_data)) => Ok((
                             path,

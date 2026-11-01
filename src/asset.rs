@@ -50,7 +50,7 @@ pub fn mappings() -> Option<Usmap> {
 }
 
 /// reads an asset with these mappings
-fn read_file(
+pub fn read_file(
     file: &Path,
     version: EngineVersion,
     mappings: Option<Usmap>,

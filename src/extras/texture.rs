@@ -62,7 +62,7 @@ pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec
                 )
             })
         })
-        .map(|imp| imp.object_name.get_owned_content())
+        .map(|imp| package_path(&imp.object_name))
         .collect()
 }
 
@@ -110,6 +110,10 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
             "texture is raw",
         ));
     }
+    // serialize mip data
+    if engine >= EngineVersion::VER_UE5_3 {
+        data.read_i32::<LE>()?;
+    }
     let format = asset.get_owned_name(data.read_i32::<LE>()?);
     // name number
     data.read_i32::<LE>()?;
@@ -131,9 +135,16 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     data.read_i32::<LE>()?;
     let packed = data.read_u32::<LE>()?;
     let mut pixel_format = match data.read_i32::<LE>()? {
+        // no format has a name anywhere close to this long
+        len if !(-64..=64).contains(&len) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid pixel format",
+            ));
+        }
         len if len.is_negative() => {
-            let mut buf = Vec::with_capacity(-len as usize);
-            for _ in 0..buf.capacity() {
+            let mut buf = Vec::new();
+            for _ in 0..-len {
                 buf.push(data.read_u16::<LE>()?);
             }
             String::from_utf16(&buf).unwrap_or_default()
@@ -154,22 +165,34 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     }
     // first mip
     data.read_i32::<LE>()?;
-    // ignore len since we're just reading the first mip
-    data.read_i32::<LE>()?;
-    // data isn't cooked
-    if engine < EngineVersion::VER_UE5_0 && data.read_i32::<LE>()? == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "mip is raw"));
-    }
-    let bulk = BulkData::new(&mut data, bulk, asset.bulk_data_start_offset)?;
-    // x
-    let x = data.read_i32::<LE>()? as usize;
-    // y
-    let y = data.read_i32::<LE>()? as usize;
+    let (bulk, x, y) = match engine >= EngineVersion::VER_UE5_2 {
+        true => read_mip(&mut data, bulk, &asset.data_resources())?,
+        false => {
+            // ignore len since we're just reading the first mip
+            data.read_i32::<LE>()?;
+            // data isn't cooked
+            if engine < EngineVersion::VER_UE5_0 && data.read_i32::<LE>()? == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "mip is raw"));
+            }
+            let bulk = BulkData::new(&mut data, bulk, asset.bulk_data_start_offset)?;
+            // x
+            let x = data.read_i32::<LE>()? as usize;
+            // y
+            let y = data.read_i32::<LE>()? as usize;
+            (bulk.data, x, y)
+        }
+    };
     // no need to read anything else
+    if x.checked_mul(y).is_none_or(|size| size > 1 << 28) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid texture size",
+        ));
+    }
     let mut bgra = vec![0; x * y];
     macro_rules! run {
         ($func: ident) => {
-            texture2ddecoder::$func(&bulk.data, x, y, &mut bgra)
+            texture2ddecoder::$func(&bulk, x, y, &mut bgra)
         };
     }
     match format.as_str() {
@@ -187,13 +210,11 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
         "PF_ETC2_RGB" => run!(decode_etc2_rgb),
         "PF_ETC2_RGBA" => run!(decode_etc2_rgba1),
         "PF_B8G8R8A8" => Ok(bgra = bulk
-            .data
-            .chunks(4)
+            .chunks_exact(4)
             // would prefer array_chunks but that's a nightly feature
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect()),
         "PF_G8" => Ok(bgra = bulk
-            .data
             .into_iter()
             .map(|g| u32::from_le_bytes([g; 4]))
             .collect()),

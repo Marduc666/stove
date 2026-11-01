@@ -18,7 +18,7 @@ fn parse_mesh() -> Result<(), unreal_asset::error::Error> {
             Some(io::Cursor::new(bulk)),
             version,
             None,
-        )?)?;
+        )?, None::<io::Cursor<&[u8]>>)?;
         export_to_file(
             &ObjSet {
                 material_library: None,
@@ -81,8 +81,9 @@ fn parse_mesh() -> Result<(), unreal_asset::error::Error> {
 // cue4parse: https://github.com/FabianFG/CUE4Parse/blob/master/CUE4Parse/UE4/Assets/Exports/StaticMesh/UStaticMesh.cs#L13
 // CAS UAssetAPI: https://github.com/LongerWarrior/UEAssetToolkitGenerator/blob/master/UAssetApi/ExportTypes/StaticMeshExport.cs#L6
 /// parses the extra data of the static mesh export to get render data
-pub fn get_mesh_info<C: io::Read + io::Seek>(
+pub fn get_mesh_info<C: io::Read + io::Seek, B: io::Read + io::Seek>(
     asset: unreal_asset::Asset<C>,
+    bulk: Option<B>,
 ) -> io::Result<(
     Vec<bevy::math::Vec3>,
     Vec<u32>,
@@ -127,7 +128,7 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
                 .filter_map(|inter| cast!(Property, ObjectProperty, inter))
                 .filter_map(|obj| asset.get_import(obj.value))
                 .filter_map(|imp| asset.get_import(imp.outer_index))
-                .map(|imp| imp.object_name.get_owned_content())
+                .map(|imp| package_path(&imp.object_name))
                 .collect()
         })
         .unwrap_or_default();
@@ -163,70 +164,147 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
     }
     */
     // array of lod resources
-    // discard len because we'll just read the first LOD
-    data.read_u32::<LE>()?;
-    let flags = StripDataFlags::read(&mut data)?;
-    if flags.data_stripped_for_server() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "mesh data is stripped for server",
-        ));
-    }
-    let mut mat_data = Vec::with_capacity(data.read_u32::<LE>()? as usize);
-    // array of sections
-    for _ in 0..mat_data.capacity() {
-        mat_data.push((
-            // mat index
-            data.read_u32::<LE>()?,
-            // first index
-            data.read_u32::<LE>()?,
-        ));
-        // tri count
-        data.read_u32::<LE>()?;
-        // min vertex index
-        data.read_u32::<LE>()?;
-        // max vertex index
-        data.read_u32::<LE>()?;
-        // collides
-        data.read_u32::<LE>()?;
-        // casts shadow
-        data.read_u32::<LE>()?;
-        // force opaque
-        if engine >= EngineVersion::VER_UE4_25 {
-            data.read_u32::<LE>()?;
-        }
-        // visible in ray tracing
-        if engine >= EngineVersion::VER_UE4_26 {
-            data.read_u32::<LE>()?;
-        }
-        // affect distance field lighting
-        if engine >= EngineVersion::VER_UE5_1 {
-            data.read_u32::<LE>()?;
-        }
-    }
-    // max deviation
-    data.read_f32::<LE>()?;
-    match engine >= EngineVersion::VER_UE4_23 {
-        // lod isn't cooked out
-        true if data.read_u32::<LE>()? == 0 => {
-            // data is not inlined
-            if data.read_u32::<LE>()? == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "mesh uses bulk data",
-                ));
-            }
-            StripDataFlags::read(&mut data)?;
-        }
-        false if !flags.class_data_stripped(2) => (),
-        _ => {
+    let resources = asset.data_resources();
+    let mut bulk = bulk;
+    let mut mat_data = Vec::new();
+    for _ in 0..data.read_u32::<LE>()? {
+        let flags = StripDataFlags::read(&mut data)?;
+        if flags.data_stripped_for_server() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "lod data is cooked out",
+                "mesh data is stripped for server",
             ));
         }
+        mat_data.clear();
+        // array of sections
+        for _ in 0..data.read_u32::<LE>()? {
+            mat_data.push((
+                // mat index
+                data.read_u32::<LE>()?,
+                // first index
+                data.read_u32::<LE>()?,
+            ));
+            // tri count
+            data.read_u32::<LE>()?;
+            // min vertex index
+            data.read_u32::<LE>()?;
+            // max vertex index
+            data.read_u32::<LE>()?;
+            // collides
+            data.read_u32::<LE>()?;
+            // casts shadow
+            data.read_u32::<LE>()?;
+            // force opaque
+            if engine >= EngineVersion::VER_UE4_25 {
+                data.read_u32::<LE>()?;
+            }
+            // visible in ray tracing
+            if engine >= EngineVersion::VER_UE4_26 {
+                data.read_u32::<LE>()?;
+            }
+            // affect distance field lighting
+            if engine >= EngineVersion::VER_UE5_1 {
+                data.read_u32::<LE>()?;
+            }
+        }
+        // source mesh bounds
+        if engine >= EngineVersion::VER_UE5_6 {
+            data.set_position(data.position() + 7 * 8);
+        }
+        // max deviation
+        data.read_f32::<LE>()?;
+        if engine < EngineVersion::VER_UE4_23 {
+            if flags.class_data_stripped(2) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "lod data is cooked out",
+                ));
+            }
+            let (positions, indices, uvs) = read_buffers(&mut data, engine, object)?;
+            return Ok((positions, indices, uvs, mats, mat_data));
+        }
+        let cooked_out = data.read_u32::<LE>()? != 0;
+        let inlined = data.read_u32::<LE>()? != 0;
+        if cooked_out {
+            continue;
+        }
+        // has ray tracing geometry
+        if engine >= EngineVersion::VER_UE5_5 {
+            data.read_u32::<LE>()?;
+        }
+        if inlined {
+            StripDataFlags::read(&mut data)?;
+            let (positions, indices, uvs) = read_buffers(&mut data, engine, object)?;
+            return Ok((positions, indices, uvs, mats, mat_data));
+        }
+        // bulk data with the location of it in the header isn't supported
+        if engine < EngineVersion::VER_UE5_2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "mesh uses bulk data",
+            ));
+        }
+        let resource = data.read_i32::<LE>()?;
+        // the highest detail lod that's available is the best one so try this one first
+        if let (Some(bulk), Some(resource)) = (
+            bulk.as_mut(),
+            usize::try_from(resource)
+                .ok()
+                .and_then(|resource| resources.get(resource)),
+        ) {
+            if let Ok(lod) = read_bulk_lod(bulk, resource, engine, object) {
+                return Ok((lod.0, lod.1, lod.2, mats, mat_data));
+            }
+        }
+        // the buffers' metadata
+        let metadata = 8 + 16 + 8 + 8 + 5 * 2 * 4;
+        // raw data header
+        let header = match engine >= EngineVersion::VER_UE5_6 {
+            true => 6 * 4,
+            false => 0,
+        };
+        // the buffer sizes
+        data.set_position(data.position() + metadata + header + 12);
     }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "no lod has any data available",
+    ))
+}
 
+/// reads the buffers of a lod that was stored in a bulk data file
+fn read_bulk_lod<C: io::Read + io::Seek>(
+    bulk: &mut C,
+    resource: &unreal_asset::asset::DataResource,
+    engine: EngineVersion,
+    object: ObjectVersion,
+) -> io::Result<Buffers> {
+    const PAYLOAD_IN_SEPARATE_FILE: u32 = 0x100;
+    const COMPRESSED: u32 = 0x2 | 0x10 | 0x80 | 0x1000 | 0x4000;
+    if resource.legacy_bulk_data_flags & PAYLOAD_IN_SEPARATE_FILE == 0
+        || resource.legacy_bulk_data_flags & COMPRESSED != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bulk data isn't in the bulk data file",
+        ));
+    }
+    bulk.seek(io::SeekFrom::Start(resource.serial_offset as u64))?;
+    let mut lod = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(bulk, resource.serial_size as u64), &mut lod)?;
+    let mut data = io::Cursor::new(lod.as_slice());
+    StripDataFlags::read(&mut data)?;
+    read_buffers(&mut data, engine, object)
+}
+
+type Buffers = (Vec<bevy::math::Vec3>, Vec<u32>, Vec<Vec<bevy::math::Vec2>>);
+
+/// reads the vertices, uvs and indices of a lod
+fn read_buffers(
+    mut data: &mut io::Cursor<&[u8]>,
+    engine: EngineVersion,
+    object: ObjectVersion,
+) -> io::Result<Buffers> {
     // position buffer
     // stride
     data.read_u32::<LE>()?;
@@ -234,8 +312,8 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
     data.read_u32::<LE>()?;
     // size
     data.read_u32::<LE>()?;
-    let mut positions = Vec::with_capacity(data.read_u32::<LE>()? as usize);
-    for _ in 0..positions.capacity() {
+    let mut positions = Vec::new();
+    for _ in 0..(data.read_u32::<LE>()? as usize) {
         let (x, y, z) = (
             data.read_f32::<LE>()?,
             data.read_f32::<LE>()?,
@@ -308,7 +386,7 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
         num_tex_coords: u32,
         precise_uvs: bool,
     ) -> Result<Vec<bevy::math::Vec2>, io::Error> {
-        let mut uvs = Vec::with_capacity(num_tex_coords as usize);
+        let mut uvs = Vec::new();
         for _ in 0..num_tex_coords {
             uvs.push(
                 match precise_uvs {
@@ -324,7 +402,7 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
         Ok(uvs)
     }
 
-    let mut uvs = Vec::with_capacity(num_verts as usize);
+    let mut uvs = Vec::new();
     match engine >= EngineVersion::VER_UE4_20 {
         true => {
             // item size
@@ -387,15 +465,15 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
             data.read_u32::<LE>()?;
             match x32 {
                 true => {
-                    let mut indices = Vec::with_capacity(data.read_u32::<LE>()? as usize / 4);
-                    for _ in 0..indices.capacity() {
+                    let mut indices = Vec::new();
+                    for _ in 0..(data.read_u32::<LE>()? as usize / 4) {
                         indices.push(data.read_u32::<LE>()?);
                     }
                     indices
                 }
                 false => {
-                    let mut indices = Vec::with_capacity(data.read_u32::<LE>()? as usize / 2);
-                    for _ in 0..indices.capacity() {
+                    let mut indices = Vec::new();
+                    for _ in 0..(data.read_u32::<LE>()? as usize / 2) {
                         indices.push(data.read_u16::<LE>()? as u32);
                     }
                     indices
@@ -405,12 +483,12 @@ pub fn get_mesh_info<C: io::Read + io::Seek>(
         false => {
             // size
             data.read_u32::<LE>()?;
-            let mut indices = Vec::with_capacity(data.read_u32::<LE>()? as usize);
-            for _ in 0..indices.capacity() {
+            let mut indices = Vec::new();
+            for _ in 0..(data.read_u32::<LE>()? as usize) {
                 indices.push(data.read_u16::<LE>()? as u32);
             }
             indices
         }
     };
-    Ok((positions, indices, uvs, mats, mat_data))
+    Ok((positions, indices, uvs))
 }
