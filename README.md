@@ -1,6 +1,6 @@
 # <img src="assets/pot.ico" width="50" /> `stove` - an editor for cooked unreal engine maps
 
-> a fork of [bananaturtlesandwich/stove](https://github.com/bananaturtlesandwich/stove) that adds support for unreal engine 5.3 to 5.8. there are no prebuilt releases of this fork yet so [build it yourself](#building) - the [original releases](https://github.com/bananaturtlesandwich/stove/releases) stop at 5.2
+> a fork of [bananaturtlesandwich/stove](https://github.com/bananaturtlesandwich/stove) that adds support for unreal engine 5.3 to 5.8. test builds are on the [releases page](https://github.com/Marduc666/stove/releases) or you can [build it yourself](#building) - the [original releases](https://github.com/bananaturtlesandwich/stove/releases) stop at 5.2
 
 <h1 align="center"><img width=900 src=https://github.com/user-attachments/assets/a480a151-c6c1-4d27-a78a-af0bdccdd754></h1>
 
@@ -66,7 +66,7 @@ some 5.8 games like the last caretaker use an expanded import layout, which stov
 cargo build -r
 ```
 
-this needs [rust](https://rustup.rs) and on windows the msvc build tools. `stove.exe` has to stay next to `bevy_dylib.dll` from `target/release`, and to run it on a machine without rust also next to the `std-*.dll` from your toolchain's `bin` folder.
+this needs [rust](https://rustup.rs) and on windows the msvc build tools. the result is the single file `target/release/stove.exe`.
 
 on windows the build fails with `LNK1104` if the path to the target folder is too long, point `CARGO_TARGET_DIR` somewhere shorter if that happens.
 
