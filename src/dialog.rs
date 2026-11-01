@@ -199,14 +199,15 @@ fn open_asset(
         .iter()
         .map(|ex| ex.get_base_export().object_name.get_owned_content())
         .collect();
-    for i in actor::get_actors(&asset) {
+    let map_actors = actor::get_actors(&asset);
+    let actor_count = map_actors.len();
+    let mut hidden_actors = 0;
+    let mut missing_meshes = 0;
+    for i in map_actors {
         let (path, actor) = match actor::Actor::new(&asset, i) {
             Ok(actor) => actor,
-            Err(e) => {
-                notif.send(Notif {
-                    message: e.to_string(),
-                    kind: Warning,
-                });
+            Err(_) => {
+                hidden_actors += 1;
                 continue;
             }
         };
@@ -321,16 +322,31 @@ fn open_asset(
                     }
                 }
                 Ok(Err(path)) => {
-                    notif.send(Notif {
-                        message: format!("couldn't find the mesh at {path}"),
-                        kind: egui_notify::ToastLevel::Warning,
-                    });
-                    batch.remove(&Some(path));
+                    missing_meshes += 1;
+                    // these can still be selected and moved as cubes
+                    if let Some(mut actors) = batch.remove(&Some(path)) {
+                        batch.entry(None).or_default().append(&mut actors);
+                    }
                 }
                 Err(_) => continue,
             }
         }
     });
+    // maps can have thousands of these so they're not worth a notification each
+    if hidden_actors > 0 {
+        notif.send(Notif {
+            message: format!(
+                "{hidden_actors} of {actor_count} actors can't be shown as they have no transform or couldn't be read"
+            ),
+            kind: Warning,
+        });
+    }
+    if missing_meshes > 0 {
+        notif.send(Notif {
+            message: format!("{missing_meshes} meshes couldn't be loaded so their actors are shown as cubes"),
+            kind: Warning,
+        });
+    }
     for (path, actors) in batch {
         match path {
             Some(ref path) => {

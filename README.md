@@ -58,6 +58,7 @@ some 5.8 games like the last caretaker use an expanded import layout, which stov
 - only unversioned packages are supported from 5.4 onwards, which is what games ship
 - exports that can't be read are kept as they are when saving but won't show up in stove
 - when a map is opened it's also test saved in memory, and you'll get a warning if the result isn't identical to the file. keep a backup of maps that warn about this
+- static meshes can't be read from 5.8 yet, actors that use them show up as cubes
 - packing an edited map back into iostore hasn't been tested
 
 # building

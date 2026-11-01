@@ -362,6 +362,32 @@ fn opens_map() {
         actors.len(),
         super::asset::preserves(&map, unreal_asset::engine_version::EngineVersion::VER_UE5_8),
     );
+    if let Ok(folder) = std::env::var("STOVE_TEST_CONTENT") {
+        let content = crate::Content {
+            game: std::env::var("STOVE_TEST_GAME").unwrap(),
+            folder: folder.into(),
+            ..Default::default()
+        };
+        let paths: std::collections::BTreeSet<_> = actors
+            .iter()
+            .filter_map(|&actor| Actor::new(&asset, actor).ok()?.0)
+            .collect();
+        let (mut loaded, mut triangles) = (0, 0);
+        let version = unreal_asset::engine_version::EngineVersion::VER_UE5_8;
+        for path in &paths {
+            match super::asset::get(&content, None, path, version, |asset, _| {
+                Ok(crate::extras::get_mesh_info(asset)?)
+            }) {
+                Some((positions, indices, ..)) => {
+                    loaded += 1;
+                    triangles += indices.len() / 3;
+                    assert!(indices.iter().all(|i| (*i as usize) < positions.len()));
+                }
+                None => println!("  no mesh {path}"),
+            }
+        }
+        println!("meshes: {loaded}/{} loaded, {triangles} triangles", paths.len());
+    }
     let mut errors: Vec<_> = errors.into_iter().collect();
     errors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (error, count) in errors.iter().take(8) {
