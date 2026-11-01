@@ -58,8 +58,8 @@ some 5.8 games like the last caretaker use an expanded import layout, which stov
 - only unversioned packages are supported from 5.4 onwards, which is what games ship
 - exports that can't be read are kept as they are when saving but won't show up in stove
 - when a map is opened it's also test saved in memory, and you'll get a warning if the result isn't identical to the file. keep a backup of maps that warn about this
-- static meshes use their most detailed lod that has any data, and nanite data isn't read$1
-- virtual textures can't be read so meshes using them show up with a grid pattern$1
+- static meshes use their most detailed lod that has any data, and nanite data isn't read
+- virtual textures can't be read so meshes using them show up with a grid pattern
 - packing an edited map back into iostore hasn't been tested
 
 # building
