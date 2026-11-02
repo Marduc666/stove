@@ -169,6 +169,10 @@ pub fn sidebar(
                     ui.label("cache assets:");
                     ui.add(egui::Checkbox::without_text(&mut appdata.cache));
                 });
+                ui.horizontal(|ui| {
+                    ui.label("check for updates:");
+                    ui.add(egui::Checkbox::without_text(&mut appdata.updates));
+                });
                 if ui.button("clear cache").clicked() {
                     match config() {
                         Some(cache) => match std::fs::remove_dir_all(cache.join("cache")) {

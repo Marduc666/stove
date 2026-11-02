@@ -9,28 +9,6 @@ pub fn set_icon(windows: NonSend<bevy::winit::WinitWindows>) {
     }
 }
 
-pub fn check_updates(mut notif: EventWriter<Notif>) {
-    use update_informer::Check;
-    if let Ok(Some(new)) = update_informer::new(
-        update_informer::registry::GitHub,
-        "bananaturtlesandwich/stove",
-        env!("CARGO_PKG_VERSION"),
-    )
-    .check_version()
-    {
-        notif.send(Notif {
-            // yes i'm petty and hate the v prefix
-            message: format!(
-                "{}.{}.{} now available!",
-                new.semver().major,
-                new.semver().minor,
-                new.semver().patch
-            ),
-            kind: Info,
-        });
-    }
-}
-
 pub fn check_args(mut notif: EventWriter<Notif>, mut commands: Commands) {
     let Some(path) = std::env::args().nth(1) else {
         return;

@@ -1,5 +1,45 @@
 use super::*;
 
+/// what's kept between runs
+///
+/// this has its own file as values egui persists are tied to the build of stove that wrote them
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Settings {
+    /// the name of the version so it survives versions being added or removed
+    version: String,
+    usmap: String,
+    paks: Vec<(String, String)>,
+    pak: Option<usize>,
+    cache: bool,
+    textures: bool,
+    wireframe: bool,
+    script: String,
+    cap: bool,
+    rate: f64,
+    fullscreen: bool,
+    updates: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            version: VERSIONS[0].1.to_string(),
+            usmap: String::new(),
+            paks: Vec::new(),
+            pak: None,
+            cache: false,
+            textures: true,
+            wireframe: false,
+            script: String::new(),
+            cap: false,
+            rate: 60.0,
+            fullscreen: false,
+            updates: true,
+        }
+    }
+}
+
 pub fn load(
     mut commands: Commands,
     mut ctx: bevy_egui::EguiContexts,
@@ -7,12 +47,7 @@ pub fn load(
     mut wire: ResMut<bevy::pbr::wireframe::WireframeConfig>,
     mut windows: Query<&mut Window>,
 ) {
-    let mut appdata = AppData {
-        textures: true,
-        rate: 60.0,
-        ..default()
-    };
-    let mut fullscreen = false;
+    // the ui's own state like where windows are
     ctx.ctx_mut().memory_mut(|storage| {
         if let Some(config) = config()
             .map(|config| config.join("config.ron"))
@@ -21,33 +56,34 @@ pub fn load(
         {
             storage.data = config
         }
-        let data = &mut storage.data;
-        fn retrieve<T: egui::util::id_type_map::SerializableAny>(
-            val: &mut T,
-            key: &str,
-            data: &mut egui::util::IdTypeMap,
-        ) {
-            if let Some(inner) = data.get_persisted(egui::Id::new(key)) {
-                *val = inner
-            }
-        }
-        retrieve(&mut appdata.version, "version", data);
-        retrieve(&mut appdata.usmap, "usmap", data);
-        retrieve(&mut appdata.paks, "paks", data);
-        retrieve(&mut appdata.pak, "pak", data);
-        retrieve(&mut appdata.cache, "cache", data);
-        retrieve(&mut appdata.textures, "textures", data);
-        retrieve(&mut appdata.wireframe, "wireframe", data);
-        retrieve(&mut appdata.script, "script", data);
-        retrieve(&mut appdata.cap, "cap", data);
-        retrieve(&mut appdata.rate, "rate", data);
-        retrieve(&mut fullscreen, "fullscreen", data);
     });
+    let settings = config()
+        .map(|config| config.join("settings.ron"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|str| ron::from_str::<Settings>(&str).ok())
+        .unwrap_or_default();
+    let mut appdata = AppData {
+        version: VERSIONS
+            .iter()
+            .position(|(_, name)| *name == settings.version)
+            .unwrap_or_default(),
+        usmap: settings.usmap,
+        pak: settings.pak.filter(|&pak| pak < settings.paks.len()),
+        paks: settings.paks,
+        cache: settings.cache,
+        textures: settings.textures,
+        wireframe: settings.wireframe,
+        script: settings.script,
+        cap: settings.cap,
+        rate: settings.rate,
+        updates: settings.updates,
+        ..default()
+    };
     fps.limiter = match appdata.cap {
         true => bevy_framepace::Limiter::from_framerate(appdata.rate),
         false => bevy_framepace::Limiter::Off,
     };
-    if fullscreen {
+    if settings.fullscreen {
         let mut window = windows.single_mut();
         window.mode = bevy::window::WindowMode::BorderlessFullscreen
     }
@@ -64,31 +100,33 @@ pub fn write(mut ctx: bevy_egui::EguiContexts, appdata: Res<AppData>, windows: Q
     if !appdata.is_changed() {
         return;
     }
-    use egui::Id;
+    let Some(config) = config() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&config);
     ctx.ctx_mut().memory_mut(|storage| {
-        let storage = &mut storage.data;
-        storage.insert_persisted(Id::new("version"), appdata.version);
-        storage.insert_persisted(Id::new("usmap"), appdata.usmap.clone());
-        storage.insert_persisted(Id::new("paks"), appdata.paks.clone());
-        storage.insert_persisted(Id::new("pak"), appdata.pak);
-        storage.insert_persisted(Id::new("cache"), appdata.cache);
-        storage.insert_persisted(Id::new("textures"), appdata.textures);
-        storage.insert_persisted(Id::new("wireframe"), appdata.wireframe);
-        storage.insert_persisted(Id::new("script"), appdata.script.clone());
-        storage.insert_persisted(Id::new("cap"), appdata.cap);
-        storage.insert_persisted(Id::new("rate"), appdata.rate);
-        storage.insert_persisted(
-            Id::new("fullscreen"),
-            windows
-                .get_single()
-                .map(|window| window.mode != bevy::window::WindowMode::Windowed)
-                .unwrap_or_default(),
-        );
-        if let Some(config) = config() {
-            let _ = std::fs::create_dir_all(&config);
-            if let Ok(data) = ron::to_string(&storage) {
-                let _ = std::fs::write(config.join("config.ron"), data);
-            }
+        if let Ok(data) = ron::to_string(&storage.data) {
+            let _ = std::fs::write(config.join("config.ron"), data);
         }
-    })
+    });
+    let settings = Settings {
+        version: VERSIONS[appdata.version].1.to_string(),
+        usmap: appdata.usmap.clone(),
+        paks: appdata.paks.clone(),
+        pak: appdata.pak,
+        cache: appdata.cache,
+        textures: appdata.textures,
+        wireframe: appdata.wireframe,
+        script: appdata.script.clone(),
+        cap: appdata.cap,
+        rate: appdata.rate,
+        updates: appdata.updates,
+        fullscreen: windows
+            .get_single()
+            .map(|window| window.mode != bevy::window::WindowMode::Windowed)
+            .unwrap_or_default(),
+    };
+    if let Ok(data) = ron::ser::to_string_pretty(&settings, ron::ser::PrettyConfig::default()) {
+        let _ = std::fs::write(config.join("settings.ron"), data);
+    }
 }

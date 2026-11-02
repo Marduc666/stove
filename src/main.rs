@@ -4,7 +4,7 @@ use bevy::prelude::*;
 #[allow(unused_imports)]
 #[cfg(debug_assertions)]
 use bevy_dylib;
-use egui_notify::ToastLevel::{Error, Info, Success, Warning};
+use egui_notify::ToastLevel::{Error, Success, Warning};
 
 mod action;
 mod actor;
@@ -20,6 +20,7 @@ mod startup;
 mod triggers;
 mod ui;
 mod unlit;
+mod update;
 mod wire;
 
 type Asset = unreal_asset::Asset<Wrapper>;
@@ -62,6 +63,7 @@ struct AppData {
     query: String,
     cap: bool,
     rate: f64,
+    updates: bool,
 }
 
 #[derive(Clone)]
@@ -210,6 +212,7 @@ fn main() -> AppExit {
         .init_resource::<FromContent>()
         .init_resource::<Client>()
         .init_resource::<Content>()
+        .init_resource::<update::Update>()
         .insert_resource(bevy::pbr::wireframe::WireframeConfig {
             global: false,
             default_color: bevy::color::palettes::css::WHITE.into(),
@@ -219,11 +222,10 @@ fn main() -> AppExit {
         .add_systems(
             Startup,
             (
-                startup::check_updates,
                 startup::discord,
                 startup::camera,
                 startup::consts,
-                (persistence::load, startup::check_args).chain(),
+                (persistence::load, startup::check_args, update::start).chain(),
             ),
         )
         .add_systems(
@@ -239,6 +241,7 @@ fn main() -> AppExit {
                 },
                 ui::sidebar,
                 ui::notifs,
+                update::window,
                 input::shortcuts,
                 action::approach,
             ),

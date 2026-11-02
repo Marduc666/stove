@@ -11,6 +11,8 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  # lets stove know which release it is so it can look for newer ones
+  STOVE_TAG: ${{ github.ref_name }}
 
 jobs:
   draft:
