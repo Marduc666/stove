@@ -47,6 +47,11 @@ pub fn load(
     mut wire: ResMut<bevy::pbr::wireframe::WireframeConfig>,
     mut windows: Query<&mut Window>,
 ) {
+    let saved = config()
+        .map(|config| config.join("settings.ron"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|str| ron::from_str::<Settings>(&str).ok());
+    let mut settings = Settings::default();
     // the ui's own state like where windows are
     ctx.ctx_mut().memory_mut(|storage| {
         if let Some(config) = config()
@@ -56,12 +61,37 @@ pub fn load(
         {
             storage.data = config
         }
+        if saved.is_some() {
+            return;
+        }
+        // older builds kept settings in egui which builds made the same way can still read
+        let data = &mut storage.data;
+        fn retrieve<T: egui::util::id_type_map::SerializableAny>(
+            val: &mut T,
+            key: &str,
+            data: &mut egui::util::IdTypeMap,
+        ) {
+            if let Some(inner) = data.get_persisted(egui::Id::new(key)) {
+                *val = inner
+            }
+        }
+        let mut version = 0usize;
+        retrieve(&mut version, "version", data);
+        if let Some((_, name)) = VERSIONS.get(version) {
+            settings.version = name.to_string();
+        }
+        retrieve(&mut settings.usmap, "usmap", data);
+        retrieve(&mut settings.paks, "paks", data);
+        retrieve(&mut settings.pak, "pak", data);
+        retrieve(&mut settings.cache, "cache", data);
+        retrieve(&mut settings.textures, "textures", data);
+        retrieve(&mut settings.wireframe, "wireframe", data);
+        retrieve(&mut settings.script, "script", data);
+        retrieve(&mut settings.cap, "cap", data);
+        retrieve(&mut settings.rate, "rate", data);
+        retrieve(&mut settings.fullscreen, "fullscreen", data);
     });
-    let settings = config()
-        .map(|config| config.join("settings.ron"))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|str| ron::from_str::<Settings>(&str).ok())
-        .unwrap_or_default();
+    let settings = saved.unwrap_or(settings);
     let mut appdata = AppData {
         version: VERSIONS
             .iter()
