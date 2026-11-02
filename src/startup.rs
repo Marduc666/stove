@@ -89,33 +89,7 @@ pub fn consts(
         unselected: wire.add(wire::Wire { selected: false }),
         selected: wire.add(wire::Wire { selected: true }),
         grid: materials.add(unlit::Unlit {
-            uv_scale: Vec4::ONE,
-            texture: images.add(Image {
-                data: include_bytes!("../assets/proto.rgba").into(),
-                texture_descriptor: bevy::render::render_resource::TextureDescriptor {
-                    label: None,
-                    size: bevy::render::render_resource::Extent3d {
-                        width: 128,
-                        height: 128,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: bevy::render::render_resource::TextureDimension::D2,
-                    format: bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                    usage: bevy::render::render_resource::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb],
-                },
-                sampler: bevy::render::texture::ImageSampler::Descriptor(
-                    bevy::render::texture::ImageSamplerDescriptor {
-                        address_mode_u: bevy::render::texture::ImageAddressMode::Repeat,
-                        address_mode_v: bevy::render::texture::ImageAddressMode::Repeat,
-                        address_mode_w: bevy::render::texture::ImageAddressMode::Repeat,
-                        ..default()
-                    },
-                ),
-                ..default()
-            }),
+            texture: images.add(unlit::layered(vec![unlit::grid()])),
         }),
     })
 }

@@ -45,6 +45,8 @@ struct Notifs(egui_notify::Toasts);
 struct Registry {
     meshes: std::collections::BTreeMap<String, (Handle<Mesh>, Option<String>)>,
     mats: std::collections::BTreeMap<String, Handle<unlit::Unlit>>,
+    /// the colour texture picked for a material and its uv scale
+    choices: std::collections::BTreeMap<String, Option<(String, [f32; 2])>>,
 }
 
 #[derive(Default, Resource)]

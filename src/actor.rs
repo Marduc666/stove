@@ -384,7 +384,7 @@ fn opens_map() {
                     let verbose = std::env::var_os("STOVE_TEST_TEXTURES").is_some();
                     for mat in mats {
                         let Some(paths) = super::asset::get(&content, None, &mat, version, |mat, _| {
-                            Ok(crate::extras::get_tex_paths(mat))
+                            Ok(crate::extras::get_tex_paths(&mat))
                         }) else {
                             continue;
                         };

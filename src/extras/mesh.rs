@@ -89,7 +89,7 @@ pub fn get_mesh_info<C: io::Read + io::Seek, B: io::Read + io::Seek>(
     Vec<u32>,
     Vec<Vec<bevy::math::Vec2>>,
     Vec<String>,
-    Vec<(u32, u32)>,
+    Vec<Section>,
 )> {
     // get the static mesh
     let Some(mesh) = asset.asset_data.exports.iter().find(|ex| {
@@ -118,17 +118,21 @@ pub fn get_mesh_info<C: io::Read + io::Seek, B: io::Read + io::Seek>(
         .map(|arr| {
             arr.value
                 .iter()
-                .filter_map(|prop| cast!(Property, StructProperty, prop))
-                .filter_map(|struc| {
-                    struc
-                        .value
-                        .iter()
-                        .find(|prop| prop.get_name() == "MaterialInterface")
+                // sections refer to these by index so ones that can't be found still need a place
+                .map(|prop| {
+                    cast!(Property, StructProperty, prop)
+                        .and_then(|struc| {
+                            struc
+                                .value
+                                .iter()
+                                .find(|prop| prop.get_name() == "MaterialInterface")
+                        })
+                        .and_then(|inter| cast!(Property, ObjectProperty, inter))
+                        .and_then(|obj| asset.get_import(obj.value))
+                        .and_then(|imp| asset.get_import(imp.outer_index))
+                        .map(|imp| package_path(&imp.object_name))
+                        .unwrap_or_default()
                 })
-                .filter_map(|inter| cast!(Property, ObjectProperty, inter))
-                .filter_map(|obj| asset.get_import(obj.value))
-                .filter_map(|imp| asset.get_import(imp.outer_index))
-                .map(|imp| package_path(&imp.object_name))
                 .collect()
         })
         .unwrap_or_default();
@@ -178,14 +182,11 @@ pub fn get_mesh_info<C: io::Read + io::Seek, B: io::Read + io::Seek>(
         mat_data.clear();
         // array of sections
         for _ in 0..data.read_u32::<LE>()? {
-            mat_data.push((
-                // mat index
-                data.read_u32::<LE>()?,
-                // first index
-                data.read_u32::<LE>()?,
-            ));
-            // tri count
-            data.read_u32::<LE>()?;
+            mat_data.push(Section {
+                material: data.read_u32::<LE>()?,
+                first: data.read_u32::<LE>()?,
+                triangles: data.read_u32::<LE>()?,
+            });
             // min vertex index
             data.read_u32::<LE>()?;
             // max vertex index
@@ -295,6 +296,16 @@ fn read_bulk_lod<C: io::Read + io::Seek>(
     let mut data = io::Cursor::new(lod.as_slice());
     StripDataFlags::read(&mut data)?;
     read_buffers(&mut data, engine, object)
+}
+
+/// a part of a mesh drawn with one material
+#[derive(Clone, Copy)]
+pub struct Section {
+    /// index into the mesh's materials
+    pub material: u32,
+    /// where its triangles start in the index buffer
+    pub first: u32,
+    pub triangles: u32,
 }
 
 type Buffers = (Vec<bevy::math::Vec3>, Vec<u32>, Vec<Vec<bevy::math::Vec2>>);

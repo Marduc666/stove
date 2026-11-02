@@ -44,7 +44,18 @@ fn parse_tex() -> Result<(), unreal_asset::error::Error> {
     Ok(())
 }
 
-pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec<String> {
+/// the material a material instance is based on
+pub fn get_parent_material<C: io::Read + io::Seek>(mat: &unreal_asset::Asset<C>) -> Option<String> {
+    mat.imports
+        .iter()
+        .filter(|imp| {
+            imp.class_name == "Material" || imp.class_name == "MaterialInstanceConstant"
+        })
+        .find_map(|imp| mat.get_import(imp.outer_index))
+        .map(|imp| package_path(&imp.object_name))
+}
+
+pub fn get_tex_paths<C: io::Read + io::Seek>(mat: &unreal_asset::Asset<C>) -> Vec<String> {
     let mut paths = mat
         .imports
         .iter()

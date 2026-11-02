@@ -230,7 +230,7 @@ fn open_asset(
                     match asset::get(&content, cache.as_deref(), &path, version, |asset, bulk| {
                         Ok(extras::get_mesh_info(asset, bulk)?)
                     }) {
-                        Some((positions, indices, uvs, mats, _mat_data)) => {
+                        Some((positions, indices, uvs, mats, sections)) => {
                             let mut mesh = Mesh::new(
                                 bevy::render::render_resource::PrimitiveTopology::TriangleList,
                                 default(),
@@ -243,90 +243,177 @@ fn open_asset(
                             .with_inserted_indices(bevy::render::mesh::Indices::U32(indices));
                             // only used for shading so they don't need to be the real ones
                             mesh.compute_smooth_normals();
-                            Ok((path, mesh, mats))
+                            Ok((path, mesh, mats, sections))
                         }
                         None => Err(path),
                     }
                 })
             })
             .collect();
+        // textures read for this map, kept until all of its meshes are done
+        let mut decoded = std::collections::HashMap::new();
         for thread in threads {
             match thread.join() {
-                Ok(Ok((path, mesh, mats))) => {
+                Ok(Ok((path, mut mesh, mats, sections))) => {
+                    // the materials in the order their sections come in
+                    let mut used: Vec<u32> = Vec::new();
+                    for section in &sections {
+                        if !used.contains(&section.material) {
+                            used.push(section.material);
+                        }
+                    }
+                    if used.is_empty() && !mats.is_empty() {
+                        used.push(0);
+                    }
                     // hard to multithread material loading since the material might not parse
-                    let mut tex = None;
-                    if appdata.textures {
-                        'outer: for mat in mats {
-                            let Some(paths) =
-                                asset::get(&content, cache.as_deref(), &mat, version, |mat, _| {
-                                    Ok(extras::get_tex_paths(mat))
-                                })
-                            else {
+                    let textures: Vec<_> = used
+                        .iter()
+                        .map(|&material| {
+                            let mat = mats.get(material as usize).filter(|_| appdata.textures)?;
+                            if let Some(choice) = registry.choices.get(mat) {
+                                return choice.clone();
+                            }
+                            let name = mat.rsplit('/').next().unwrap_or_default();
+                            if name.to_ascii_lowercase().contains("glass") {
+                                return Some((GLASS.to_string(), [1.0; 2]));
+                            }
+                            // material instances without textures of their own use their parent's
+                            let mut choice = None;
+                            let mut current = mat.clone();
+                            for _ in 0..4 {
+                                let Some((paths, parent)) =
+                                    asset::get(&content, cache.as_deref(), &current, version, |mat, _| {
+                                        Ok((extras::get_tex_paths(&mat), extras::get_parent_material(&mat)))
+                                    })
+                                else {
+                                    break;
+                                };
+                                choice = paths.into_iter().find_map(|path| {
+                                    let texture = decoded
+                                        .entry(path.clone())
+                                        .or_insert_with(|| decode(&content, cache.as_deref(), &path, version));
+                                    texture.as_ref().map(|texture| (path, texture.3))
+                                });
+                                match parent {
+                                    Some(parent) if choice.is_none() => current = parent,
+                                    _ => break,
+                                }
+                            }
+                            registry.choices.insert(mat.clone(), choice.clone());
+                            choice
+                        })
+                        .collect();
+                    // textures made of several udim blocks need their uvs scaled
+                    // and the layer a vertex's texture is in goes in its second uvs
+                    if textures.len() > 1
+                        || textures.iter().flatten().any(|(_, scale)| *scale != [1.0; 2])
+                    {
+                        let mut indices: Vec<u32> = mesh
+                            .indices()
+                            .map(|indices| indices.iter().map(|i| i as u32).collect())
+                            .unwrap_or_default();
+                        let count = mesh.count_vertices();
+                        let mut layers: Vec<Option<usize>> = vec![None; count];
+                        // a vertex used by sections with different textures is copied for each of them
+                        // as the layer would otherwise blend across its triangles
+                        let mut copies = Vec::new();
+                        let mut copy_of = std::collections::HashMap::new();
+                        for section in &sections {
+                            let Some(layer) = used.iter().position(|&material| material == section.material) else {
                                 continue;
                             };
-                            for path in paths {
-                                // meshes often share textures
-                                if registry.mats.contains_key(&path) {
-                                    tex = Some((path, None));
-                                    break 'outer;
-                                }
-                                if let Some((false, width, height, data, uv_scale)) = asset::get(
-                                    &content,
-                                    cache.as_deref(),
-                                    &path,
-                                    version,
-                                    |tex, bulk| Ok(extras::get_tex_info(tex, bulk)?),
-                                ) {
-                                    tex = Some((path, Some((uv_scale, Image {
-                                        data,
-                                        texture_descriptor: bevy::render::render_resource::TextureDescriptor {
-                                            label: None,
-                                            size: bevy::render::render_resource::Extent3d {
-                                                width,
-                                                height,
-                                                depth_or_array_layers: 1,
-                                            },
-                                            mip_level_count: 1,
-                                            sample_count: 1,
-                                            dimension: bevy::render::render_resource::TextureDimension::D2,
-                                            format: bevy::render::render_resource::TextureFormat::Bgra8UnormSrgb,
-                                            usage:
-                                                bevy::render::render_resource::TextureUsages::TEXTURE_BINDING,
-                                            view_formats: &[
-                                                bevy::render::render_resource::TextureFormat::Bgra8UnormSrgb,
-                                            ],
-                                        },
-                                        sampler: bevy::render::texture::ImageSampler::Descriptor(
-                                            bevy::render::texture::ImageSamplerDescriptor {
-                                                address_mode_u: bevy::render::texture::ImageAddressMode::Repeat,
-                                                address_mode_v: bevy::render::texture::ImageAddressMode::Repeat,
-                                                address_mode_w: bevy::render::texture::ImageAddressMode::Repeat,
-                                                // the textures are smaller than in game so they'd look blocky otherwise
-                                                mag_filter: bevy::render::texture::ImageFilterMode::Linear,
-                                                min_filter: bevy::render::texture::ImageFilterMode::Linear,
-                                                ..default()
-                                            },
-                                        ),
-                                        ..default()
-                                    }))));
-                                    break 'outer;
+                            let first = (section.first as usize).min(indices.len());
+                            let last = (first + section.triangles as usize * 3).min(indices.len());
+                            for index in &mut indices[first..last] {
+                                let vertex = *index as usize;
+                                match layers.get(vertex).copied() {
+                                    Some(None) => layers[vertex] = Some(layer),
+                                    Some(Some(existing)) if existing != layer => {
+                                        *index = *copy_of.entry((vertex, layer)).or_insert_with(|| {
+                                            copies.push(vertex);
+                                            layers.push(Some(layer));
+                                            (layers.len() - 1) as u32
+                                        });
+                                    }
+                                    _ => (),
                                 }
                             }
                         }
+                        if !copies.is_empty() {
+                            use bevy::render::mesh::VertexAttributeValues as Values;
+                            for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0] {
+                                match mesh.attribute_mut(attribute) {
+                                    Some(Values::Float32x3(values)) => {
+                                        for &vertex in &copies {
+                                            values.push(values[vertex]);
+                                        }
+                                    }
+                                    Some(Values::Float32x2(values)) => {
+                                        for &vertex in &copies {
+                                            values.push(values[vertex]);
+                                        }
+                                    }
+                                    _ => (),
+                                }
+                            }
+                            mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
+                        }
+                        if let Some(bevy::render::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                            mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+                        {
+                            for (uv, layer) in uvs.iter_mut().zip(&layers) {
+                                if let Some(Some((_, scale))) = layer.map(|layer| &textures[layer]) {
+                                    uv[0] *= scale[0];
+                                    uv[1] *= scale[1];
+                                }
+                            }
+                        }
+                        mesh.insert_attribute(
+                            Mesh::ATTRIBUTE_UV_1,
+                            layers
+                                .into_iter()
+                                .map(|layer| [layer.unwrap_or_default() as f32, 0.0])
+                                .collect::<Vec<_>>(),
+                        );
                     }
-                    registry.meshes.insert(
-                        path.clone(),
-                        (meshes.add(mesh), tex.as_ref().map(|(path, _)| path.clone())),
-                    );
-                    if let Some((path, Some((uv_scale, tex)))) = tex {
+                    // meshes with the same textures share a material
+                    let key = textures
+                        .iter()
+                        .any(Option::is_some)
+                        .then(|| {
+                            textures
+                                .iter()
+                                .map(|texture| texture.as_ref().map_or("", |(path, _)| path.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("|")
+                        });
+                    if let Some(key) = key.as_ref().filter(|key| !registry.mats.contains_key(*key)) {
+                        let layers = textures
+                            .iter()
+                            .map(|texture| {
+                                texture
+                                    .as_ref()
+                                    .and_then(|(path, _)| {
+                                        if path == GLASS {
+                                            return Some((1, 1, vec![230, 220, 205, 255]));
+                                        }
+                                        decoded
+                                            .entry(path.clone())
+                                            .or_insert_with(|| decode(&content, cache.as_deref(), path, version))
+                                            .as_ref()
+                                            .map(|(width, height, data, _)| (*width, *height, data.clone()))
+                                    })
+                                    .unwrap_or_else(unlit::grid)
+                            })
+                            .collect();
                         registry.mats.insert(
-                            path,
+                            key.clone(),
                             materials.add(unlit::Unlit {
-                                texture: images.add(tex),
-                                uv_scale: Vec4::new(uv_scale[0], uv_scale[1], 0.0, 0.0),
+                                texture: images.add(unlit::layered(layers)),
                             }),
                         );
                     }
+                    registry.meshes.insert(path.clone(), (meshes.add(mesh), key));
                 }
                 Ok(Err(path)) => {
                     missing_meshes += 1;
@@ -413,6 +500,24 @@ fn open_asset(
         kind: Success,
     });
 }
+
+/// a colour texture's size, pixels and uv scale, normal maps aren't used
+fn decode(
+    content: &Content,
+    cache: Option<&std::path::Path>,
+    path: &str,
+    version: unreal_asset::engine_version::EngineVersion,
+) -> Option<(u32, u32, Vec<u8>, [f32; 2])> {
+    match asset::get(content, cache, path, version, |tex, bulk| {
+        Ok(extras::get_tex_info(tex, bulk)?)
+    }) {
+        Some((false, width, height, data, uv_scale)) => Some((width, height, data, uv_scale)),
+        _ => None,
+    }
+}
+
+/// stands in for the texture of glass, whose textures are smudges and droplets meant to be seen through
+const GLASS: &str = "glass";
 
 pub fn save_as(
     trigger: Trigger<triggers::SaveAs>,
