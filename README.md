@@ -48,9 +48,10 @@ cooked ue5 games need a little setup as their maps don't contain any type inform
 1. extract the game with [retoc](https://github.com/trumank/retoc) `to-legacy` if it uses iostore (`.utoc`/`.ucas`), keeping the folder structure
 2. select the engine version in stove
 3. select the game's `.usmap` next to the engine version
-4. open a map from the extracted folder
+4. add the extracted folder under `content` and select it, meshes and textures are read from there
+5. open a map from the extracted folder
 
-blueprints missing from the usmap are read from their packages, so the whole game should be extracted and not only its maps.
+blueprints and textures missing from the map are read from their own packages, so the whole game should be extracted and not only its maps.
 
 some 5.8 games like the last caretaker use an expanded import layout, which stove detects by itself but needs [ihsoft's retoc fork](https://github.com/ihsoft/retoc) with `--version UE5_8` to extract.
 
@@ -62,6 +63,13 @@ some 5.8 games like the last caretaker use an expanded import layout, which stov
 - each material shows one colour texture without lighting from the map, glass is a flat colour and materials whose textures can't be found show a grid
 - textures are shown at 1024 pixels at most, and virtual textures use the first layer only
 - an edited map packed back with retoc has loaded in the last caretaker once, so keep backups
+- invisible meshes like collision volumes show up as they do in the unreal editor
+
+# updates and settings
+
+builds from the [releases page](https://github.com/Marduc666/stove/releases) check for newer releases when they start and offer them in a window. `update` downloads the new build and puts it in place of the running one, and `restart now` starts it. test builds are offered newer test builds and stable builds only stable ones. this can be turned off with `options` → `check for updates`, and builds you make yourself don't check.
+
+settings are kept in `settings.ron` in stove's config folder (`%APPDATA%\stove` on windows), so they carry over to new builds.
 
 # building
 
@@ -80,6 +88,6 @@ oodle compressed paks are read with the `oo2core_*.dll` found in the game's fold
 - [atenfyr](https://github.com/atenfyr) for creating the extensive [UAssetAPI](https://github.com/atenfyr/UAssetAPI) which made this project possible ❤️
 - [localcc](https://github.com/localcc) for rewriting it as [unreal_asset](https://github.com/AstroTechies/unrealmodding/tree/main/unreal_asset), allowing me to program this in [rust <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Food/Crab.png" width="20" />](https://www.rust-lang.org/)
 - [LongerWarrior](https://github.com/LongerWarrior) for pointing out everything I was missing in the actor duplication code
-- [ASEAN Motor Club](https://github.com/ASEAN-Motor-Club/unrealmodding) for the usmap and unversioned property fixes this fork's [unreal_asset](https://github.com/Marduc666/unrealmodding/tree/ue5.8-support) builds on
+- [ASEAN Motor Club](https://github.com/ASEAN-Motor-Club/unrealmodding) for the usmap and unversioned property fixes this fork's [unreal_asset](https://github.com/Marduc666/unrealmodding) builds on
 - [ihsoft](https://github.com/ihsoft) for working out the ue 5.8 cooked layouts in their [UAssetAPI](https://github.com/ihsoft/UAssetAPI) and [retoc](https://github.com/ihsoft/retoc) forks
 - the [CUE4Parse](https://github.com/FabianFG/CUE4Parse) contributors for documenting what changed between engine versions
