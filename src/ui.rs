@@ -68,6 +68,36 @@ pub fn sidebar(
             });
             egui::ComboBox::from_id_source("version").width(0.0)
                 .show_index(ui, &mut appdata.version, VERSIONS.len(), |i| VERSIONS[i].1.to_string());
+            let mappings = match std::path::Path::new(&appdata.usmap).file_name() {
+                Some(name) => name.to_string_lossy().into_owned(),
+                None => "no mappings".into(),
+            };
+            ui.menu_button(mappings, |ui| {
+                if ui.button("open usmap").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("open mappings")
+                        .add_filter("mappings", &["usmap"])
+                        .pick_file()
+                    {
+                        let path = path.to_string_lossy().into_owned();
+                        match crate::asset::load_mappings(&path) {
+                            Ok(()) => appdata.usmap = path,
+                            Err(e) => {
+                                notif.send(Notif {
+                                    message: format!("failed to read mappings: {e}"),
+                                    kind: Error,
+                                });
+                            }
+                        }
+                    }
+                }
+                if !appdata.usmap.is_empty() && ui.button("clear").clicked() {
+                    ui.close_menu();
+                    let _ = crate::asset::load_mappings("");
+                    appdata.usmap.clear();
+                }
+            });
             let mut remove_at = None;
             // kinda wanna split appdata into components so this isn't necessary
             ui.menu_button("content", |ui| {
@@ -139,6 +169,10 @@ pub fn sidebar(
                     ui.label("cache assets:");
                     ui.add(egui::Checkbox::without_text(&mut appdata.cache));
                 });
+                ui.horizontal(|ui| {
+                    ui.label("check for updates:");
+                    ui.add(egui::Checkbox::without_text(&mut appdata.updates));
+                });
                 if ui.button("clear cache").clicked() {
                     match config() {
                         Some(cache) => match std::fs::remove_dir_all(cache.join("cache")) {
@@ -194,8 +228,8 @@ pub fn sidebar(
                             ui.label("and then loaded as loose files. the folder structure must be maintained with the game name/Content in the root directory")
                         });
                     });
-                    ui.menu_button("nothing is showing up", |ui| ui.label("either the map has no actors or the game requires mappings for asset editing which stove doesn't support yet"));
-                    ui.menu_button("what about 5.3 and 5.4?", |ui| ui.label("stove doesn't support the latest engine versions yet"));
+                    ui.menu_button("nothing is showing up", |ui| ui.label("either the map has no actors or the game requires a usmap, which can be selected next to the engine version"));
+                    ui.menu_button("what about 5.3 and newer?", |ui| ui.label("these need a usmap and iostore games need extracting with retoc to-legacy first. only unversioned assets are supported"));
                 });
                 ui.menu_button("shortcuts", shortcuts);
             })

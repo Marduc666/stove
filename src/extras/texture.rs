@@ -8,7 +8,7 @@ use unreal_asset::{
 #[test]
 fn parse_tex() -> Result<(), unreal_asset::error::Error> {
     let parse = |asset, exp, bulk: Option<_>, name, version| {
-        let (_, x, y, rgba) = get_tex_info(
+        let (_, x, y, rgba, _) = get_tex_info(
             unreal_asset::Asset::new(
                 io::Cursor::new(asset),
                 Some(io::Cursor::new(exp)),
@@ -44,8 +44,20 @@ fn parse_tex() -> Result<(), unreal_asset::error::Error> {
     Ok(())
 }
 
-pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec<String> {
+/// the material a material instance is based on
+pub fn get_parent_material<C: io::Read + io::Seek>(mat: &unreal_asset::Asset<C>) -> Option<String> {
     mat.imports
+        .iter()
+        .filter(|imp| {
+            imp.class_name == "Material" || imp.class_name == "MaterialInstanceConstant"
+        })
+        .find_map(|imp| mat.get_import(imp.outer_index))
+        .map(|imp| package_path(&imp.object_name))
+}
+
+pub fn get_tex_paths<C: io::Read + io::Seek>(mat: &unreal_asset::Asset<C>) -> Vec<String> {
+    let mut paths = mat
+        .imports
         .iter()
         .filter(|imp| imp.class_name == "Texture2D")
         .filter_map(|imp| mat.get_import(imp.outer_index))
@@ -62,8 +74,23 @@ pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec
                 )
             })
         })
-        .map(|imp| imp.object_name.get_owned_content())
-        .collect()
+        .map(|imp| package_path(&imp.object_name))
+        .collect::<Vec<_>>();
+    // only one texture is shown so try the colour ones first
+    paths.sort_by_key(|path| colour_rank(path));
+    paths
+}
+
+/// how likely a texture's name means it holds the colour of a surface, lower is more likely
+fn colour_rank(path: &str) -> u8 {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    match name.rsplit('_').next().unwrap_or_default() {
+        "d" | "bc" | "basecolor" | "basecolour" | "albedo" | "diffuse" | "color" | "colour" | "c"
+        | "alb" | "col" | "b" => 0,
+        "n" | "normal" | "nrm" | "orm" | "arme" | "rma" | "mr" | "m" | "mask" | "masks" | "r"
+        | "ao" | "h" | "height" | "mt" | "e" | "emissive" => 2,
+        _ => 1,
+    }
 }
 
 // reference implementations:
@@ -71,12 +98,11 @@ pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec
 // umodel png exporter: https://github.com/gildor2/UEViewer/blob/master/Unreal/Wrappers/TexturePNG.cpp#L192
 // CAS UAssetAPI texture export: https://github.com/LongerWarrior/UEAssetToolkitGenerator/blob/master/UAssetApi/ExportTypes/Texture2DExport.cs#L182
 // CAS UAssetAPI decoder: https://github.com/LongerWarrior/UEAssetToolkitGenerator/blob/master/CookedAssetSerializer/Textures/TextureDecoder.cs#L95
-/// parses the extra data of the texture export to get data
+/// parses the extra data of the texture export to get whether it's a normal map, its size, its pixels and how much its uvs should be scaled
 pub fn get_tex_info<C: io::Read + io::Seek>(
     asset: unreal_asset::Asset<C>,
     bulk: Option<C>,
-) -> Result<(bool, u32, u32, Vec<u8>), io::Error> {
-    use io::Read;
+) -> Result<(bool, u32, u32, Vec<u8>, [f32; 2]), io::Error> {
     // get the static mesh
     let Some(tex) = asset.asset_data.exports.iter().find(|ex| {
         asset
@@ -110,6 +136,10 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
             "texture is raw",
         ));
     }
+    // serialize mip data
+    if engine >= EngineVersion::VER_UE5_3 {
+        data.read_i32::<LE>()?;
+    }
     let format = asset.get_owned_name(data.read_i32::<LE>()?);
     // name number
     data.read_i32::<LE>()?;
@@ -130,22 +160,8 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     // y
     data.read_i32::<LE>()?;
     let packed = data.read_u32::<LE>()?;
-    let mut pixel_format = match data.read_i32::<LE>()? {
-        len if len.is_negative() => {
-            let mut buf = Vec::with_capacity(-len as usize);
-            for _ in 0..buf.capacity() {
-                buf.push(data.read_u16::<LE>()?);
-            }
-            String::from_utf16(&buf).unwrap_or_default()
-        }
-        len => {
-            let mut buf = vec![0; len as usize];
-            data.read_exact(&mut buf)?;
-            String::from_utf8(buf).unwrap_or_default()
-        }
-    };
-    // remove the null byte
-    pixel_format.pop();
+    // pixel format
+    read_fstring(&mut data)?;
     if packed & HAS_OPT_DATA == HAS_OPT_DATA {
         // extras
         data.read_u32::<LE>()?;
@@ -154,22 +170,48 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     }
     // first mip
     data.read_i32::<LE>()?;
-    // ignore len since we're just reading the first mip
-    data.read_i32::<LE>()?;
-    // data isn't cooked
-    if engine < EngineVersion::VER_UE5_0 && data.read_i32::<LE>()? == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "mip is raw"));
-    }
-    let bulk = BulkData::new(&mut data, bulk, asset.bulk_data_start_offset)?;
-    // x
-    let x = data.read_i32::<LE>()? as usize;
-    // y
-    let y = data.read_i32::<LE>()? as usize;
+    let mut format = format;
+    let mut uv_scale = [1.0; 2];
+    let (bulk, x, y) = match engine >= EngineVersion::VER_UE5_2 {
+        true => {
+            let mut bulk = bulk;
+            let resources = asset.data_resources();
+            match read_mip(&mut data, bulk.as_mut(), &resources)? {
+                Some(mip) => mip,
+                None => {
+                    let level = read_virtual(&mut data, bulk.as_mut(), &resources)?;
+                    format = level.format;
+                    uv_scale = level.uv_scale;
+                    (level.data, level.x, level.y)
+                }
+            }
+        }
+        false => {
+            // ignore len since we're just reading the first mip
+            data.read_i32::<LE>()?;
+            // data isn't cooked
+            if engine < EngineVersion::VER_UE5_0 && data.read_i32::<LE>()? == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "mip is raw"));
+            }
+            let bulk = BulkData::new(&mut data, bulk, asset.bulk_data_start_offset)?;
+            // x
+            let x = data.read_i32::<LE>()? as usize;
+            // y
+            let y = data.read_i32::<LE>()? as usize;
+            (bulk.data, x, y)
+        }
+    };
     // no need to read anything else
+    if x.checked_mul(y).is_none_or(|size| size > 1 << 28) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid texture size",
+        ));
+    }
     let mut bgra = vec![0; x * y];
     macro_rules! run {
         ($func: ident) => {
-            texture2ddecoder::$func(&bulk.data, x, y, &mut bgra)
+            texture2ddecoder::$func(&bulk, x, y, &mut bgra)
         };
     }
     match format.as_str() {
@@ -187,13 +229,11 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
         "PF_ETC2_RGB" => run!(decode_etc2_rgb),
         "PF_ETC2_RGBA" => run!(decode_etc2_rgba1),
         "PF_B8G8R8A8" => Ok(bgra = bulk
-            .data
-            .chunks(4)
+            .chunks_exact(4)
             // would prefer array_chunks but that's a nightly feature
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect()),
         "PF_G8" => Ok(bgra = bulk
-            .data
             .into_iter()
             .map(|g| u32::from_le_bytes([g; 4]))
             .collect()),
@@ -205,6 +245,7 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
         x as u32,
         y as u32,
         bgra.into_iter().flat_map(u32::to_le_bytes).collect(),
+        uv_scale,
     ))
 }
 

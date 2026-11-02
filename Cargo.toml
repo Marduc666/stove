@@ -9,7 +9,7 @@ version = "0.13.2"
 edition = "2021"
 
 [dependencies]
-unreal_asset = { git = "https://github.com/astrotechies/unrealmodding", rev = "84e60cc" }
+unreal_asset = { git = "https://github.com/Marduc666/unrealmodding", rev = "ef2108a" }
 byteorder = "1.5"
 bitflags = "2.4"
 texture2ddecoder = "0.0"
@@ -38,13 +38,14 @@ bevy_framepace = { version = "0.17", default-features = false }
 discord-rich-presence = "0.2"
 dirs = "5.0"
 ron = "0.8"
+serde = { version = "1.0", features = ["derive"] }
 rfd = "0.14"
-update-informer = { version = "1.1", default-features = false, features = [
-    "github",
-    "rustls-tls",
-    "ureq"
-] }
+self-replace = "1.5"
+ureq = { version = "3.0", features = ["json"] }
 walkdir = "2.5"
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.8"
 
 [dev-dependencies]
 png = "0.17"

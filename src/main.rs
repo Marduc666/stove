@@ -4,7 +4,7 @@ use bevy::prelude::*;
 #[allow(unused_imports)]
 #[cfg(debug_assertions)]
 use bevy_dylib;
-use egui_notify::ToastLevel::{Error, Info, Success, Warning};
+use egui_notify::ToastLevel::{Error, Success, Warning};
 
 mod action;
 mod actor;
@@ -12,12 +12,15 @@ mod asset;
 mod dialog;
 mod extras;
 mod input;
+#[cfg(target_os = "windows")]
+mod oodle;
 mod persistence;
 mod picking;
 mod startup;
 mod triggers;
 mod ui;
 mod unlit;
+mod update;
 mod wire;
 
 type Asset = unreal_asset::Asset<Wrapper>;
@@ -42,6 +45,8 @@ struct Notifs(egui_notify::Toasts);
 struct Registry {
     meshes: std::collections::BTreeMap<String, (Handle<Mesh>, Option<String>)>,
     mats: std::collections::BTreeMap<String, Handle<unlit::Unlit>>,
+    /// the colour texture picked for a material and its uv scale
+    choices: std::collections::BTreeMap<String, Option<(String, [f32; 2])>>,
 }
 
 #[derive(Default, Resource)]
@@ -50,6 +55,7 @@ struct Focus(Option<Vec3>);
 #[derive(Default, Resource)]
 struct AppData {
     version: usize,
+    usmap: String,
     paks: Vec<(String, String)>,
     pak: Option<usize>,
     cache: bool,
@@ -59,6 +65,7 @@ struct AppData {
     query: String,
     cap: bool,
     rate: f64,
+    updates: bool,
 }
 
 #[derive(Clone)]
@@ -207,6 +214,7 @@ fn main() -> AppExit {
         .init_resource::<FromContent>()
         .init_resource::<Client>()
         .init_resource::<Content>()
+        .init_resource::<update::Update>()
         .insert_resource(bevy::pbr::wireframe::WireframeConfig {
             global: false,
             default_color: bevy::color::palettes::css::WHITE.into(),
@@ -216,11 +224,10 @@ fn main() -> AppExit {
         .add_systems(
             Startup,
             (
-                startup::check_updates,
                 startup::discord,
                 startup::camera,
                 startup::consts,
-                (persistence::load, startup::check_args).chain(),
+                (persistence::load, startup::check_args, update::start).chain(),
             ),
         )
         .add_systems(
@@ -236,6 +243,7 @@ fn main() -> AppExit {
                 },
                 ui::sidebar,
                 ui::notifs,
+                update::window,
                 input::shortcuts,
                 action::approach,
             ),
@@ -265,7 +273,7 @@ fn main() -> AppExit {
 
 use unreal_asset::engine_version::EngineVersion::*;
 
-const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 33] = [
+const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 39] = [
     (UNKNOWN, "unknown"),
     (VER_UE4_OLDEST_LOADABLE_PACKAGE, "oldest"),
     (VER_UE4_0, "4.0"),
@@ -299,4 +307,10 @@ const VERSIONS: [(unreal_asset::engine_version::EngineVersion, &str); 33] = [
     (VER_UE5_0, "5.0"),
     (VER_UE5_1, "5.1"),
     (VER_UE5_2, "5.2"),
+    (VER_UE5_3, "5.3"),
+    (VER_UE5_4, "5.4"),
+    (VER_UE5_5, "5.5"),
+    (VER_UE5_6, "5.6"),
+    (VER_UE5_7, "5.7"),
+    (VER_UE5_8, "5.8"),
 ];

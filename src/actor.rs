@@ -82,11 +82,13 @@ impl Actor {
         let name = match asset.get_engine_version()
             >= unreal_asset::engine_version::EngineVersion::VER_UE5_1
         {
-            true => match norm.extras[8..12]
-                .try_into()
-                .ok()
-                .map(|i| i32::from_le_bytes(i) as usize)
-                .and_then(|len| String::from_utf8(norm.extras[12..12 + len].to_vec()).ok())
+            true => match norm
+                .extras
+                .get(8..12)
+                .and_then(|len| len.try_into().ok())
+                .map(|len| i32::from_le_bytes(len) as usize)
+                .and_then(|len| norm.extras.get(12..12 + len))
+                .and_then(|name| String::from_utf8(name.to_vec()).ok())
             {
                 Some(name) if !name.chars().all(char::is_whitespace) => name,
                 _ => norm.base_export.object_name.get_owned_content(),
@@ -115,7 +117,7 @@ impl Actor {
             })
             .and_then(|i| asset.get_import(i.value))
             .and_then(|i| asset.get_import(i.outer_index))
-            .map(|path| path.object_name.get_owned_content());
+            .map(|path| crate::extras::package_path(&path.object_name));
         // normally these are further back so reversed should be a bit faster
         for prop in norm.properties.iter().rev() {
             match prop.get_name().get_owned_content().as_str() {
@@ -327,4 +329,169 @@ fn on_prop_refs(prop: &mut Property, func: &mut impl FnMut(&mut PackageIndex)) {
         }
         _ => (),
     })
+}
+
+/// opens a map like stove would, set `STOVE_TEST_MAP` and `STOVE_TEST_USMAP` to run this
+#[test]
+fn opens_map() {
+    let (Ok(map), Ok(usmap)) = (std::env::var("STOVE_TEST_MAP"), std::env::var("STOVE_TEST_USMAP"))
+    else {
+        return;
+    };
+    super::asset::load_mappings(&usmap).unwrap();
+    let asset = super::asset::open(
+        &map,
+        unreal_asset::engine_version::EngineVersion::VER_UE5_8,
+    )
+    .unwrap();
+    let actors = get_actors(&asset);
+    let mut errors = std::collections::BTreeMap::new();
+    let mut meshes = 0;
+    let mut opened = 0;
+    for &actor in &actors {
+        match Actor::new(&asset, actor) {
+            Ok((mesh, _)) => {
+                opened += 1;
+                meshes += mesh.is_some() as usize;
+            }
+            Err(e) => *errors.entry(e.to_string()).or_insert(0) += 1,
+        }
+    }
+    println!(
+        "{map}: {opened}/{} actors, {meshes} with meshes, saves identically: {}",
+        actors.len(),
+        super::asset::preserves(&map, unreal_asset::engine_version::EngineVersion::VER_UE5_8),
+    );
+    if let Ok(folder) = std::env::var("STOVE_TEST_CONTENT") {
+        let content = crate::Content {
+            game: std::env::var("STOVE_TEST_GAME").unwrap(),
+            folder: folder.into(),
+            ..Default::default()
+        };
+        let paths: std::collections::BTreeSet<_> = actors
+            .iter()
+            .filter_map(|&actor| Actor::new(&asset, actor).ok()?.0)
+            .collect();
+        let (mut loaded, mut triangles, mut materials, mut textures) = (0, 0, 0, 0);
+        let version = unreal_asset::engine_version::EngineVersion::VER_UE5_8;
+        for path in &paths {
+            match super::asset::get(&content, None, path, version, |asset, bulk| {
+                Ok(crate::extras::get_mesh_info(asset, bulk)?)
+            }) {
+                Some((positions, indices, _, mats, _)) => {
+                    loaded += 1;
+                    // the textures of each material and why they couldn't be read
+                    let verbose = std::env::var_os("STOVE_TEST_TEXTURES").is_some();
+                    for mat in mats {
+                        let Some(paths) = super::asset::get(&content, None, &mat, version, |mat, _| {
+                            Ok(crate::extras::get_tex_paths(&mat))
+                        }) else {
+                            continue;
+                        };
+                        if verbose {
+                            println!("  {mat}");
+                        }
+                        for path in paths {
+                            materials += 1;
+                            let result = super::asset::get(&content, None, &path, version, |tex, bulk| {
+                                Ok(crate::extras::get_tex_info(tex, bulk).map(|tex| {
+                                    // raw bgra pixels to look at
+                                    if let Some(dir) = std::env::var_os("STOVE_TEST_DUMP_TEXTURES") {
+                                        let name = path.rsplit('/').next().unwrap_or_default();
+                                        let _ = std::fs::write(
+                                            std::path::Path::new(&dir).join(format!("{name}.{}x{}.bgra", tex.1, tex.2)),
+                                            &tex.3,
+                                        );
+                                    }
+                                    (tex.1, tex.2)
+                                }).map_err(|e| e.to_string()))
+                            });
+                            if verbose {
+                                println!("    {path} {result:?}");
+                            }
+                            textures += matches!(result, Some(Ok(_))) as usize;
+                        }
+                    }
+                    triangles += indices.len() / 3;
+                    assert!(indices.iter().all(|i| (*i as usize) < positions.len()));
+                    assert!(positions.iter().all(|p| p.is_finite() && p.abs().max_element() < 1e5));
+                    let (min, max) = positions.iter().fold(
+                        (bevy::math::Vec3::MAX, bevy::math::Vec3::MIN),
+                        |(min, max), p| (min.min(*p), max.max(*p)),
+                    );
+                    if std::env::var_os("STOVE_TEST_SIZES").is_some() {
+                        println!(
+                            "  {:>7} verts {:>7} tris {:>6.1} x {:>6.1} x {:>6.1} m  {}",
+                            positions.len(),
+                            indices.len() / 3,
+                            (max - min).x,
+                            (max - min).y,
+                            (max - min).z,
+                            path.rsplit('/').next().unwrap_or_default()
+                        );
+                    }
+                }
+                None => println!("  no mesh {path}"),
+            }
+        }
+        println!("meshes: {loaded}/{} loaded, {triangles} triangles, {textures}/{materials} textures", paths.len());
+    }
+    let mut errors: Vec<_> = errors.into_iter().collect();
+    errors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    for (error, count) in errors.iter().take(8) {
+        println!("  {count}x {}", error.chars().take(120).collect::<String>());
+    }
+    assert!(opened > 0);
+}
+
+/// reads every mesh and texture below `STOVE_TEST_SWEEP` so a bad file can't take stove down
+#[test]
+fn reads_all_content() {
+    let (Ok(root), Ok(usmap)) = (std::env::var("STOVE_TEST_SWEEP"), std::env::var("STOVE_TEST_USMAP"))
+    else {
+        return;
+    };
+    super::asset::load_mappings(&usmap).unwrap();
+    let version = unreal_asset::engine_version::EngineVersion::VER_UE5_8;
+    let open = |path: &std::path::Path| -> Option<_> {
+        std::fs::File::open(path.with_extension("ubulk"))
+            .ok()
+            .map(std::io::BufReader::new)
+            .map(super::Wrapper::File)
+    };
+    let mut errors = std::collections::BTreeMap::<String, usize>::new();
+    let (mut meshes, mut meshes_read, mut textures, mut textures_read) = (0, 0, 0, 0);
+    for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "uasset") {
+            continue;
+        }
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let is_mesh = name.starts_with("SM_");
+        if !is_mesh && !name.starts_with("T_") {
+            continue;
+        }
+        let Ok(asset) = super::asset::read_file(path, version, super::asset::mappings()) else {
+            continue;
+        };
+        let error = match is_mesh {
+            true => {
+                meshes += 1;
+                crate::extras::get_mesh_info(asset, open(path)).map(|_| meshes_read += 1).err()
+            }
+            false => {
+                textures += 1;
+                crate::extras::get_tex_info(asset, open(path)).map(|_| textures_read += 1).err()
+            }
+        };
+        if let Some(e) = error {
+            *errors.entry(e.to_string()).or_default() += 1;
+        }
+    }
+    println!("sweep: {meshes_read}/{meshes} meshes, {textures_read}/{textures} textures");
+    let mut errors: Vec<_> = errors.into_iter().collect();
+    errors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    for (error, count) in errors.iter().take(12) {
+        println!("  {count}x {}", error.chars().take(100).collect::<String>());
+    }
 }
