@@ -8,7 +8,7 @@ use unreal_asset::{
 #[test]
 fn parse_tex() -> Result<(), unreal_asset::error::Error> {
     let parse = |asset, exp, bulk: Option<_>, name, version| {
-        let (_, x, y, rgba) = get_tex_info(
+        let (_, x, y, rgba, _) = get_tex_info(
             unreal_asset::Asset::new(
                 io::Cursor::new(asset),
                 Some(io::Cursor::new(exp)),
@@ -45,7 +45,8 @@ fn parse_tex() -> Result<(), unreal_asset::error::Error> {
 }
 
 pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec<String> {
-    mat.imports
+    let mut paths = mat
+        .imports
         .iter()
         .filter(|imp| imp.class_name == "Texture2D")
         .filter_map(|imp| mat.get_import(imp.outer_index))
@@ -63,7 +64,22 @@ pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec
             })
         })
         .map(|imp| package_path(&imp.object_name))
-        .collect()
+        .collect::<Vec<_>>();
+    // only one texture is shown so try the colour ones first
+    paths.sort_by_key(|path| colour_rank(path));
+    paths
+}
+
+/// how likely a texture's name means it holds the colour of a surface, lower is more likely
+fn colour_rank(path: &str) -> u8 {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    match name.rsplit('_').next().unwrap_or_default() {
+        "d" | "bc" | "basecolor" | "basecolour" | "albedo" | "diffuse" | "color" | "colour" | "c"
+        | "alb" | "col" | "b" => 0,
+        "n" | "normal" | "nrm" | "orm" | "arme" | "rma" | "mr" | "m" | "mask" | "masks" | "r"
+        | "ao" | "h" | "height" | "mt" | "e" | "emissive" => 2,
+        _ => 1,
+    }
 }
 
 // reference implementations:
@@ -71,12 +87,11 @@ pub fn get_tex_paths<C: io::Read + io::Seek>(mat: unreal_asset::Asset<C>) -> Vec
 // umodel png exporter: https://github.com/gildor2/UEViewer/blob/master/Unreal/Wrappers/TexturePNG.cpp#L192
 // CAS UAssetAPI texture export: https://github.com/LongerWarrior/UEAssetToolkitGenerator/blob/master/UAssetApi/ExportTypes/Texture2DExport.cs#L182
 // CAS UAssetAPI decoder: https://github.com/LongerWarrior/UEAssetToolkitGenerator/blob/master/CookedAssetSerializer/Textures/TextureDecoder.cs#L95
-/// parses the extra data of the texture export to get data
+/// parses the extra data of the texture export to get whether it's a normal map, its size, its pixels and how much its uvs should be scaled
 pub fn get_tex_info<C: io::Read + io::Seek>(
     asset: unreal_asset::Asset<C>,
     bulk: Option<C>,
-) -> Result<(bool, u32, u32, Vec<u8>), io::Error> {
-    use io::Read;
+) -> Result<(bool, u32, u32, Vec<u8>, [f32; 2]), io::Error> {
     // get the static mesh
     let Some(tex) = asset.asset_data.exports.iter().find(|ex| {
         asset
@@ -134,29 +149,8 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     // y
     data.read_i32::<LE>()?;
     let packed = data.read_u32::<LE>()?;
-    let mut pixel_format = match data.read_i32::<LE>()? {
-        // no format has a name anywhere close to this long
-        len if !(-64..=64).contains(&len) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid pixel format",
-            ));
-        }
-        len if len.is_negative() => {
-            let mut buf = Vec::new();
-            for _ in 0..-len {
-                buf.push(data.read_u16::<LE>()?);
-            }
-            String::from_utf16(&buf).unwrap_or_default()
-        }
-        len => {
-            let mut buf = vec![0; len as usize];
-            data.read_exact(&mut buf)?;
-            String::from_utf8(buf).unwrap_or_default()
-        }
-    };
-    // remove the null byte
-    pixel_format.pop();
+    // pixel format
+    read_fstring(&mut data)?;
     if packed & HAS_OPT_DATA == HAS_OPT_DATA {
         // extras
         data.read_u32::<LE>()?;
@@ -165,8 +159,22 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
     }
     // first mip
     data.read_i32::<LE>()?;
+    let mut format = format;
+    let mut uv_scale = [1.0; 2];
     let (bulk, x, y) = match engine >= EngineVersion::VER_UE5_2 {
-        true => read_mip(&mut data, bulk, &asset.data_resources())?,
+        true => {
+            let mut bulk = bulk;
+            let resources = asset.data_resources();
+            match read_mip(&mut data, bulk.as_mut(), &resources)? {
+                Some(mip) => mip,
+                None => {
+                    let level = read_virtual(&mut data, bulk.as_mut(), &resources)?;
+                    format = level.format;
+                    uv_scale = level.uv_scale;
+                    (level.data, level.x, level.y)
+                }
+            }
+        }
         false => {
             // ignore len since we're just reading the first mip
             data.read_i32::<LE>()?;
@@ -226,6 +234,7 @@ pub fn get_tex_info<C: io::Read + io::Seek>(
         x as u32,
         y as u32,
         bgra.into_iter().flat_map(u32::to_le_bytes).collect(),
+        uv_scale,
     ))
 }
 

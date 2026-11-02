@@ -230,9 +230,8 @@ fn open_asset(
                     match asset::get(&content, cache.as_deref(), &path, version, |asset, bulk| {
                         Ok(extras::get_mesh_info(asset, bulk)?)
                     }) {
-                        Some((positions, indices, uvs, mats, _mat_data)) => Ok((
-                            path,
-                            Mesh::new(
+                        Some((positions, indices, uvs, mats, _mat_data)) => {
+                            let mut mesh = Mesh::new(
                                 bevy::render::render_resource::PrimitiveTopology::TriangleList,
                                 default(),
                             )
@@ -241,9 +240,11 @@ fn open_asset(
                                 Mesh::ATTRIBUTE_UV_0,
                                 uvs.into_iter().map(|uv| uv[0]).collect::<Vec<_>>(),
                             )
-                            .with_inserted_indices(bevy::render::mesh::Indices::U32(indices)),
-                            mats,
-                        )),
+                            .with_inserted_indices(bevy::render::mesh::Indices::U32(indices));
+                            // only used for shading so they don't need to be the real ones
+                            mesh.compute_smooth_normals();
+                            Ok((path, mesh, mats))
+                        }
                         None => Err(path),
                     }
                 })
@@ -256,9 +257,6 @@ fn open_asset(
                     let mut tex = None;
                     if appdata.textures {
                         'outer: for mat in mats {
-                            if registry.mats.contains_key(&mat) {
-                                break;
-                            }
                             let Some(paths) =
                                 asset::get(&content, cache.as_deref(), &mat, version, |mat, _| {
                                     Ok(extras::get_tex_paths(mat))
@@ -267,14 +265,19 @@ fn open_asset(
                                 continue;
                             };
                             for path in paths {
-                                if let Some((false, width, height, data)) = asset::get(
+                                // meshes often share textures
+                                if registry.mats.contains_key(&path) {
+                                    tex = Some((path, None));
+                                    break 'outer;
+                                }
+                                if let Some((false, width, height, data, uv_scale)) = asset::get(
                                     &content,
                                     cache.as_deref(),
                                     &path,
                                     version,
                                     |tex, bulk| Ok(extras::get_tex_info(tex, bulk)?),
                                 ) {
-                                    tex = Some((path, Image {
+                                    tex = Some((path, Some((uv_scale, Image {
                                         data,
                                         texture_descriptor: bevy::render::render_resource::TextureDescriptor {
                                             label: None,
@@ -298,11 +301,14 @@ fn open_asset(
                                                 address_mode_u: bevy::render::texture::ImageAddressMode::Repeat,
                                                 address_mode_v: bevy::render::texture::ImageAddressMode::Repeat,
                                                 address_mode_w: bevy::render::texture::ImageAddressMode::Repeat,
+                                                // the textures are smaller than in game so they'd look blocky otherwise
+                                                mag_filter: bevy::render::texture::ImageFilterMode::Linear,
+                                                min_filter: bevy::render::texture::ImageFilterMode::Linear,
                                                 ..default()
                                             },
                                         ),
                                         ..default()
-                                    }));
+                                    }))));
                                     break 'outer;
                                 }
                             }
@@ -312,11 +318,12 @@ fn open_asset(
                         path.clone(),
                         (meshes.add(mesh), tex.as_ref().map(|(path, _)| path.clone())),
                     );
-                    if let Some((path, tex)) = tex {
+                    if let Some((path, Some((uv_scale, tex)))) = tex {
                         registry.mats.insert(
                             path,
                             materials.add(unlit::Unlit {
                                 texture: images.add(tex),
+                                uv_scale: Vec4::new(uv_scale[0], uv_scale[1], 0.0, 0.0),
                             }),
                         );
                     }

@@ -380,18 +380,36 @@ fn opens_map() {
             }) {
                 Some((positions, indices, _, mats, _)) => {
                     loaded += 1;
+                    // the textures of each material and why they couldn't be read
+                    let verbose = std::env::var_os("STOVE_TEST_TEXTURES").is_some();
                     for mat in mats {
                         let Some(paths) = super::asset::get(&content, None, &mat, version, |mat, _| {
                             Ok(crate::extras::get_tex_paths(mat))
                         }) else {
                             continue;
                         };
+                        if verbose {
+                            println!("  {mat}");
+                        }
                         for path in paths {
                             materials += 1;
-                            textures += super::asset::get(&content, None, &path, version, |tex, bulk| {
-                                Ok(crate::extras::get_tex_info(tex, bulk)?)
-                            })
-                            .is_some() as usize;
+                            let result = super::asset::get(&content, None, &path, version, |tex, bulk| {
+                                Ok(crate::extras::get_tex_info(tex, bulk).map(|tex| {
+                                    // raw bgra pixels to look at
+                                    if let Some(dir) = std::env::var_os("STOVE_TEST_DUMP_TEXTURES") {
+                                        let name = path.rsplit('/').next().unwrap_or_default();
+                                        let _ = std::fs::write(
+                                            std::path::Path::new(&dir).join(format!("{name}.{}x{}.bgra", tex.1, tex.2)),
+                                            &tex.3,
+                                        );
+                                    }
+                                    (tex.1, tex.2)
+                                }).map_err(|e| e.to_string()))
+                            });
+                            if verbose {
+                                println!("    {path} {result:?}");
+                            }
+                            textures += matches!(result, Some(Ok(_))) as usize;
                         }
                     }
                     triangles += indices.len() / 3;

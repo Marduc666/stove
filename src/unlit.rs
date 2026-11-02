@@ -15,6 +15,9 @@ pub struct Unlit {
     #[texture(0)]
     #[sampler(1)]
     pub texture: Handle<Image>,
+    /// textures made of several udim blocks need their uvs scaled
+    #[uniform(2)]
+    pub uv_scale: Vec4,
 }
 
 impl Material for Unlit {

@@ -111,6 +111,7 @@ pub fn consts(
         unselected: wire.add(wire::Wire { selected: false }),
         selected: wire.add(wire::Wire { selected: true }),
         grid: materials.add(unlit::Unlit {
+            uv_scale: Vec4::ONE,
             texture: images.add(Image {
                 data: include_bytes!("../assets/proto.rgba").into(),
                 texture_descriptor: bevy::render::render_resource::TextureDescriptor {
